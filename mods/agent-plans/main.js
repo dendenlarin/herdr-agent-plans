@@ -1,0 +1,287 @@
+// Agent Plans: the agent's plan in Herdr's right panel.
+// Roles by props(): { button: true } is the "Plan" button beside the tabs; otherwise the panel itself.
+// Data is written by hook/plan.py to <app home>/data/agent-plans/<terminal>.json.
+
+import { View, div, image, svg } from "gpui-kit";
+import { v_flex, h_flex } from "gpui-base";
+import { spaces, terminals, agents, focused, layout, run, theme, shared, setShared, appHome, home, readTextFile, watchFolder, props, exec, window } from "herdr";
+import * as fs from "fs/promises";
+
+const PANEL = "plans";            // tab id in the panel-body stack
+const STALE_MS = 30 * 60 * 1000;  // a closed terminal's plan stays visible for half an hour
+const ICON = "mods/agent-plans/plan.svg";
+const SPINNER = "mods/workspace-chrome/spinner.svg";
+const HOOK_MARK = "agent-plans/hook/plan.py";
+const REPO = "https://github.com/dendenlarin/herdr-agent-plans";
+
+// Opens a link in the system browser: Herdr has no command for this.
+function openLink(url) {
+  const os = window()?.platform;
+  const [cmd, args] = os === "windows" ? ["cmd", ["/c", "start", "", url]] : [os === "linux" ? "xdg-open" : "open", [url]];
+  exec(cmd, args).catch(() => {});
+}
+
+const dataDir = () => `${appHome().replace(/\/+$/, "")}/data/agent-plans`;
+const clip = (s, n) => (s && s.length > n ? s.slice(0, n - 1).trimEnd() + "…" : s);
+
+function find(node, id) {
+  if (node?.id === id) return node;
+  for (const child of node?.children ?? []) {
+    const found = find(child, id);
+    if (found) return found;
+  }
+  return null;
+}
+
+function ago(ms) {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  return `${Math.round(s / 3600)} h ago`;
+}
+
+function programIcon(p, size, color) {
+  if (!p?.icon) return null;
+  return p.tint ? svg(p.icon).size(size).flex_none().text_color(color) : image(p.icon).w(size).h(size).flex_none();
+}
+
+const appName = (app) => (app === "codex" ? "Codex" : app === "claude-code" ? "Claude" : "Agent");
+
+export default class AgentPlans extends View {
+  init(_props, cx) {
+    if (props()?.button) {
+      this.button = true;
+      // The built-in tab bar remembers the open panel per space only for ids in this list.
+      const panels = shared("workspace.panels") ?? ["files", "changes"];
+      if (!panels.includes(PANEL)) setShared("workspace.panels", [...panels, PANEL]);
+      return;
+    }
+    this.plans = []; this.sig = ""; this.watching = false;
+    this.pick = {};   // picked agent per space
+    this.open = {};   // open stage per plan key (null: all folded)
+    this.hooks = { claude: null, codex: null };
+    this.refresh(cx);
+    this.checkHooks(cx);
+    // Backup for watchFolder; only a few small files to read. Redraw only on changes.
+    cx.timer.every(3000, (cx) => this.refresh(cx));
+    // Once a minute: "N min ago" and the hook check (it calls cx.notify()).
+    cx.timer.every(60000, (cx) => this.checkHooks(cx));
+  }
+
+  // ---------- data ----------
+
+  refresh(cx) {
+    if (this.loading) return;
+    this.loading = true;
+    cx.spawn(async (cx) => {
+      try {
+        const dir = dataDir();
+        let names = [];
+        try { names = (await fs.readdir(dir)).filter((n) => n.endsWith(".json") && !n.startsWith(".")); } catch {}
+        const plans = [];
+        for (const name of names) {
+          try {
+            const p = JSON.parse(await readTextFile(`${dir}/${name}`));
+            if (Array.isArray(p.steps) && p.steps.length) plans.push({ ...p, key: name.slice(0, -5) });
+          } catch {}
+        }
+        const sig = JSON.stringify(plans);
+        if (sig !== this.sig) { this.sig = sig; this.plans = plans; cx.notify(); }
+        if (!this.watching) this.watch(dir, cx);
+      } finally { this.loading = false; }
+    });
+  }
+
+  watch(dir, cx) {
+    this.watching = true;
+    cx.spawn(async (cx) => {
+      try {
+        await fs.mkdir(dir, { recursive: true });
+        for (;;) { await watchFolder(dir); this.refresh(cx); }
+      } catch { this.watching = false; }
+    });
+  }
+
+  // Are the hooks connected? (Look for the script path in the agents' global configs.)
+  checkHooks(cx) {
+    cx.spawn(async (cx) => {
+      const has = async (path) => {
+        try { return (await readTextFile(path)).includes(HOOK_MARK); } catch { return null; }
+      };
+      const h = home().replace(/\/+$/, "");
+      this.hooks = { claude: await has(`${h}/.claude/settings.json`), codex: await has(`${h}/.codex/config.toml`) };
+      cx.notify();
+    });
+  }
+
+  // Plans of the shown space's agents: live and recently closed.
+  forSpace(spaceId) {
+    const terms = new Map(terminals().map((t) => [t.address, t]));
+    const ags = new Map(agents().map((a) => [a.address, a]));
+    return this.plans
+      .map((p) => {
+        const term = terms.get(p.terminal);
+        const agent = ags.get(p.terminal);
+        const space = agent?.space ?? term?.labels?.["herdr.space"] ?? null;
+        return { ...p, term, agent, space, live: term?.state === "live" };
+      })
+      .filter((p) => p.space === spaceId && (p.live || Date.now() - (p.updated ?? 0) < STALE_MS))
+      .sort((a, b) => (Number(b.live) - Number(a.live)) || ((b.updated ?? 0) - (a.updated ?? 0)));
+  }
+
+  // ---------- button ----------
+
+  renderButton(t) {
+    const root = layout(), panel = find(root, "panel"), body = find(root, "panel-body");
+    const on = Boolean(panel && !panel.hidden && body?.active === PANEL);
+    return h_flex().size_full().items_center().justify_end().pr(10).bg(t.chrome).border_b(1).border_color(t.border)
+      .child(
+        h_flex().id("agent-plans-button").h(26).px(8).gap(5).flex_none().items_center().rounded(6)
+          .text_size(12).bg(on ? t.selected : t.chrome).text_color(on ? t.foreground : t.muted)
+          .hover((s) => s.bg(t.hover))
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+          .on_click(() => {
+            if (on) run("layout.hide", { id: "panel" });
+            else { run("layout.select", { stack: "panel-body", child: PANEL }); run("layout.show", { id: "panel" }); }
+          })
+          .child(svg(ICON).size(14))
+          .child("Plan"),
+      );
+  }
+
+  // ---------- panel ----------
+
+  mark(t, status, spinning) {
+    const box = () => div().size(18).flex_none().rounded(9).flex().items_center().justify_center();
+    if (status === "completed") return box().bg(t.done).text_size(11).font_bold().text_color(t.background).child("✓");
+    if (status === "in_progress")
+      return spinning ? box().child(svg(SPINNER).size(16).text_color(t.working).spin(1100)) : box().border(2).border_color(t.working);
+    return box().border(1.5).border_color(t.dim);
+  }
+
+  pill(t, status, live) {
+    const make = (color, text) =>
+      h_flex().flex_none().gap(5).items_center().px(8).h(22).rounded(11).bg(color + "1f")
+        .child(div().size(6).rounded(3).bg(color))
+        .child(div().text_size(12).text_color(color).child(text));
+    if (!live) return make(t.dim, "closed");
+    if (status === "working") return make(t.working, "working");
+    if (status === "blocked") return make(t.blocked, "needs you");
+    if (status === "done") return make(t.done, "done");
+    return make(t.dim, "idle");
+  }
+
+  chips(t, list, selected, spaceId) {
+    return h_flex().id("ap-chips").flex_none().gap(6).px(14).pb(10).flex_wrap().children(
+      list.map((p) => {
+        const on = p.key === selected.key;
+        return h_flex().id(`ap-chip-${p.key}`).h(26).px(9).gap(6).items_center().rounded(13).cursor_pointer()
+          .bg(on ? t.selected : t.surface).text_size(12).text_color(on ? t.foreground : t.muted)
+          .hover((s) => s.bg(t.hover))
+          .on_click((_e, cx) => { this.pick[spaceId] = p.key; cx.notify(); })
+          .child(programIcon(p.agent?.program ?? p.term?.program, 13, t.foreground))
+          .child(div().max_w(120).truncate().child(p.agent?.tab_name || p.term?.where || p.key));
+      }),
+    );
+  }
+
+  stage(t, p, s, i, isOpen, spinning) {
+    const items = Array.isArray(s.items) ? s.items : [];
+    const current = s.status === "in_progress";
+    const done = s.status === "completed";
+    // For the current step Claude gives an "-ing" form (activeForm).
+    const text = current && s.active ? s.active : s.text;
+    const head = h_flex().gap(10).items_start()
+      .child(div().pt(1).child(this.mark(t, s.status, spinning)))
+      .child(div().flex_1().min_w(0).whitespace_normal().line_height(1.35).text_size(14)
+        .text_color(done ? t.dim : current ? t.foreground : t.muted)
+        .when(current, (el) => el.font_medium())
+        .child(text || "—"))
+      .when(items.length > 0, (el) => el.child(
+        div().flex_none().pt(1).text_size(12).text_color(t.dim).child(isOpen ? "▾" : `${items.length} ▸`)));
+    const card = v_flex().id(`ap-stage-${p.key}-${i}`).flex_none().gap(8).px(12).py(10).rounded(10)
+      .bg(current ? t.raised : t.surface)
+      .when(items.length > 0, (el) => el.cursor_pointer().hover((st) => st.bg(t.hover))
+        .on_click((_e, cx) => { this.open[p.key] = isOpen ? null : i; cx.notify(); }))
+      .child(head);
+    if (isOpen && items.length)
+      card.child(v_flex().gap(5).pl(28).children(items.map((it, j) =>
+        h_flex().id(`ap-item-${p.key}-${i}-${j}`).gap(8).items_start()
+          .child(div().flex_none().text_size(13).text_color(t.dim).child("•"))
+          .child(div().flex_1().min_w(0).whitespace_normal().line_height(1.4).text_size(13)
+            .text_color(done ? t.dim : t.muted).child(it)))));
+    return card;
+  }
+
+  plan(t, p) {
+    const steps = p.steps;
+    const done = steps.filter((s) => s.status === "completed").length;
+    const curIdx = steps.findIndex((s) => s.status === "in_progress");
+    const status = p.agent?.status ?? (typeof p.term?.status === "string" ? p.term.status : null);
+    const spinning = p.live && status === "working";
+    const where = p.agent?.tab_name || p.term?.where || "";
+    // One stage is open: the clicked one, else the current one.
+    const openIdx = p.key in this.open ? this.open[p.key] : (curIdx >= 0 ? curIdx : null);
+    const msg = spinning ? p.term?.report?.msg : null;
+    const all = done === steps.length;
+
+    return v_flex().gap(12)
+      .child(
+        v_flex().gap(8).px(4)
+          .child(h_flex().gap(8).items_center()
+            .child(programIcon(p.agent?.program ?? p.term?.program, 16, t.foreground))
+            .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(t.muted)
+              .child(where ? `${appName(p.app)} · ${where}` : appName(p.app)))
+            .child(this.pill(t, status, p.live)))
+          .when(Boolean(p.title), (el) => el.child(div().text_size(16).font_semibold().whitespace_normal()
+            .line_height(1.3).text_color(t.foreground).child(clip(p.title, 140))))
+          .child(h_flex().gap(10).items_center()
+            .child(div().flex_none().text_size(12.5).text_color(t.muted).child(`${done} of ${steps.length}`))
+            .child(div().flex_1().h(4).rounded(2).bg(t.border).child(
+              div().h(4).rounded(2).bg(all ? t.done : t.working)
+                .w(`${Math.max(2, Math.round((done / steps.length) * 100))}%`)))),
+      )
+      .child(v_flex().gap(6).children(steps.map((s, i) => this.stage(t, p, s, i, openIdx === i, spinning))))
+      .child(h_flex().gap(8).px(4).text_size(12).text_color(t.dim)
+        .child(div().flex_1().min_w(0).truncate().child(msg ? clip(msg, 90) : ""))
+        .child(div().flex_none().child(`updated ${ago(p.updated ?? 0)}`)));
+  }
+
+  empty(t) {
+    const missing = Object.entries(this.hooks).filter(([, v]) => v === false).map(([k]) => (k === "claude" ? "Claude Code" : "Codex"));
+    const line = (text, color = t.dim) => div().text_size(13).text_color(color).whitespace_normal().line_height(1.45).child(text);
+    return v_flex().gap(10).px(6).py(4)
+      .child(line("No plan in this space yet.", t.muted))
+      .child(line("Approve a plan in Claude Code plan mode or Codex Plan Mode, and its stages show up here."))
+      .when(missing.length > 0, (el) => el.child(line(`Hooks not connected for ${missing.join(" and ")} — see the Agent Plans README.`, t.blocked)));
+  }
+
+  render(cx) {
+    const t = theme();
+    if (this.button) return this.renderButton(t);
+    const space = spaces().find((s) => s.active);
+    const list = space ? this.forSpace(space.id) : [];
+    // Default: the focused agent, else the picked one, else the newest.
+    const f = focused();
+    const focusedKey = list.find((p) => p.terminal && (p.terminal === f?.agent || p.terminal === f?.terminal))?.key;
+    const pickedKey = space && list.some((p) => p.key === this.pick[space.id]) ? this.pick[space.id] : null;
+    const selected = list.find((p) => p.key === (pickedKey ?? focusedKey)) ?? list[0];
+
+    return v_flex().id("ap-root").size_full().bg(t.background).text_color(t.foreground)
+      .child(h_flex().h(44).flex_none().pl(18).pr(10).gap(2).items_center()
+        .child(div().flex_1().text_size(14).font_semibold().child("Plan"))
+        .child(div().id("ap-repo").size(26).rounded(6).flex().items_center().justify_center()
+          .text_color(t.dim).cursor_pointer().tooltip("Agent Plans on GitHub")
+          .hover((s) => s.bg(t.hover).text_color(t.foreground))
+          .on_click(() => openLink(REPO))
+          .child(svg("mods/agent-plans/github.svg").size(15)))
+        .child(div().id("ap-close").size(26).rounded(6).flex().items_center().justify_center()
+          .text_size(13).text_color(t.dim).cursor_pointer().tooltip("Hide panel")
+          .hover((s) => s.bg(t.hover).text_color(t.foreground))
+          .on_click(() => run("layout.hide", { id: "panel" }))
+          .child("✕")))
+      .when(list.length > 1, (el) => el.child(this.chips(t, list, selected, space.id)))
+      .child(v_flex().id("ap-scroll").flex_1().min_h(0).px(12).pb(12).overflow_y_scrollbar()
+        .child(selected ? this.plan(t, selected) : this.empty(t)));
+  }
+}
