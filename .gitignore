@@ -1,0 +1,4 @@
+jsconfig.json
+*.d.ts
+__pycache__/
+.DS_Store
