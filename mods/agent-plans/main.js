@@ -112,6 +112,7 @@ export default class AgentPlans extends View {
         const r = await exec("python3", [hookScript(), ...args]);
         this.hooks = JSON.parse(r.stdout);
         this.hookError = false;
+        this.configError = this.hooks.error ?? null;
       } catch { this.hookError = true; }
       this.busy = null;
       cx.notify();
@@ -123,6 +124,7 @@ export default class AgentPlans extends View {
     const present = AGENTS.filter(([id]) => this.hooks?.[id]?.present);
     const line = (text) => div().text_size(12).text_color(t.dim).whitespace_normal().line_height(1.4).child(text);
     if (this.hookError) return v_flex().px(18).py(10).child(line("Agent Plans needs python3 on PATH to connect agents."));
+    const err = this.configError ? line(`Couldn't change ${this.configError}`) : null;
     if (!present.length) return null;
     const missing = present.some(([id]) => !this.hooks[id].connected);
     if (!missing && !this.showConnect) return null;
@@ -143,7 +145,8 @@ export default class AgentPlans extends View {
             .when(on, (el) => el.child("✓"))
             .child(this.busy === id ? "…" : label);
         })))
-      .when(Boolean(this.hooks.codex?.connected), (el) => el.child(line("Approve once in Codex: /hooks")));
+      .when(Boolean(this.hooks.codex?.connected), (el) => el.child(line("Approve once in Codex: /hooks")))
+      .when(Boolean(err), (el) => el.child(err));
   }
 
   // Планы агентов показанного space: живые и недавно закрытые.
