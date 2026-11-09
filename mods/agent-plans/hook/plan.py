@@ -47,10 +47,14 @@ STATUS = {
 
 # ---------- storage ----------
 
+def safe_key(address):
+    """Terminal address -> file name: letters, digits, "_" and "-" only (can't escape the data folder)."""
+    return re.sub(r"[^A-Za-z0-9_-]", "_", address) if address else None
+
+
 def terminal():
     """The hc terminal address. Without it the agent is not running in Herdr: nowhere to show a plan."""
-    t = os.environ.get("HC_TERMINAL_ID")
-    return t.replace("/", "_") if t else None
+    return safe_key(os.environ.get("HC_TERMINAL_ID"))
 
 
 def codex_terminal(data):
@@ -69,7 +73,7 @@ def codex_terminal(data):
         if os.path.realpath(fg) == cwd:
             found.append(info)
     if len(found) == 1:
-        return found[0]["address"]
+        return safe_key(found[0]["address"])
     name = thread_name(data)
     # Title like "⠏ <thread name> | <project>"; the name may be cut short.
     title = lambda t: norm(re.sub(r"^\W+", "", (t.get("title") or "").split(" | ")[0]))
@@ -77,7 +81,7 @@ def codex_terminal(data):
     if len(match) != 1:
         # A new thread may have no name yet; the hook runs mid-turn, so the terminal is working.
         match = [t for t in found if (t.get("status") or {}).get("state") == "working"]
-    return match[0]["address"] if len(match) == 1 else None
+    return safe_key(match[0]["address"]) if len(match) == 1 else None
 
 
 def thread_name(data):
@@ -308,7 +312,7 @@ def from_claude(data, key):
         # Approved plan: markdown in tool_input.plan, else the file at planFilePath.
         text = inp.get("plan") or ""
         path = inp.get("planFilePath") or find_key(resp, "planFilePath") or find_key(resp, "filePath")
-        if not text and path:
+        if not text and path and str(path).endswith(".md"):
             try:
                 with open(path, encoding="utf-8") as f:
                     text = f.read()
@@ -476,7 +480,11 @@ def cli(argv):
         print(json.dumps(hook_status()))
         return
     if cmd in ("connect", "disconnect") and len(argv) == 2 and argv[1] in ("claude", "codex"):
-        (claude_set if argv[1] == "claude" else codex_set)(cmd == "connect")
+        try:
+            (claude_set if argv[1] == "claude" else codex_set)(cmd == "connect")
+        except Exception as e:  # e.g. a broken settings.json: leave the config alone
+            print(json.dumps({**hook_status(), "error": f"{CLAUDE_CFG if argv[1] == 'claude' else CODEX_CFG}: {e}"}))
+            sys.exit(1)
         print(json.dumps(hook_status()))
         return
     if not key:

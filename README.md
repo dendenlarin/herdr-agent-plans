@@ -1,12 +1,23 @@
+<div align="center">
+
+<img src=".github/logo.svg" alt="" width="80">
+
 # Agent Plans for Herdr
 
-Your coding agent's plan, right beside it.
+**Your coding agent's plan, right beside it.**
+
+[![Herdr mod](https://img.shields.io/badge/Herdr-mod-5b7cfa)](https://herdr.dev/mods)
+[![Claude Code](https://img.shields.io/badge/Claude_Code-plan_mode-d97757)](https://docs.claude.com/en/docs/claude-code)
+[![Codex](https://img.shields.io/badge/Codex-Plan_Mode-10a37f)](https://developers.openai.com/codex)
+[![MIT](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
+
+<img src="preview.png" alt="Agent Plans panel" width="343">
+
+</div>
 
 Approve a plan in **Claude Code** plan mode or **Codex** Plan Mode, and its stages show up in a **Plan** panel next to Files and Changes: what's done, what the agent is on now, what each stage contains. Each space keeps its own panel open or closed.
 
 No daemon, no plan files in your repos — two small hooks and a panel.
-
-<p align="center"><img src="preview.png" alt="Agent Plans panel" width="343"></p>
 
 ## How it works
 
