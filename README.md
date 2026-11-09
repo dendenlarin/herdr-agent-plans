@@ -15,7 +15,7 @@
 
 </div>
 
-Approve a plan in **Claude Code** plan mode or **Codex** Plan Mode, and its stages show up in a **Plan** panel next to Files and Changes: what's done, what the agent is on now, what each stage contains. Each space keeps its own panel open or closed.
+A mod for [Herdr](https://herdr.dev), the desktop app for running coding agents side by side. Approve a plan in **Claude Code** plan mode or **Codex** Plan Mode, and its stages show up in a **Plan** panel next to Files and Changes: what's done, what the agent is on now, what each stage contains. Each space keeps its own panel open or closed.
 
 No daemon, no plan files in your repos — two small hooks and a panel.
 
