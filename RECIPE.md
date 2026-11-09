@@ -2,6 +2,8 @@
 
 The plan your coding agent approved, beside it: a **Plan** button after Files and Changes opens a panel with the plan's stages for the shown space — done, current, still to do — and what each stage contains. Plans come from Claude Code plan mode (`ExitPlanMode`) and Codex Plan Mode (`<proposed_plan>`), through hooks that write one JSON file per terminal.
 
+![Agent Plans](preview.png)
+
 ## What you see
 
 - **Plan button**: a 72px block at the right end of the tab-bar row, `chrome` background with the tab bar's 1px `border` along the bottom. Inside, right-aligned with 10px right padding: a 26px pill, 8px side padding, 5px gap, radius 6, 12px text — a 14px list-check icon (`plan.svg`) and `Plan`. `selected` background and `foreground` text while the Plan panel shows, else `chrome` and `muted`; `hover` on hover. Same look as the tab bar's Files and Changes buttons.
