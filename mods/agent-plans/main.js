@@ -4,14 +4,13 @@
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, terminals, agents, focused, layout, run, theme, shared, setShared, appHome, home, readTextFile, watchFolder, props, exec, window } from "herdr";
+import { spaces, terminals, agents, focused, layout, run, theme, shared, setShared, appHome, readTextFile, watchFolder, props, exec, window } from "herdr";
 import * as fs from "fs/promises";
 
 const PANEL = "plans";            // id вкладки в стеке panel-body
 const STALE_MS = 30 * 60 * 1000;  // план закрытого терминала показываем ещё полчаса
 const ICON = "mods/agent-plans/plan.svg";
 const SPINNER = "mods/workspace-chrome/spinner.svg";
-const HOOK_MARK = "agent-plans/hook/plan.py";
 const REPO = "https://github.com/dendenlarin/herdr-agent-plans";
 
 // Ссылка в браузере системы: у Herdr нет своей команды для этого.
@@ -21,6 +20,8 @@ function openLink(url) {
   exec(cmd, args).catch(() => {});
 }
 
+const AGENTS = [["claude", "Claude Code"], ["codex", "Codex"]];
+const hookScript = () => `${appHome().replace(/\/+$/, "")}/mods/agent-plans/hook/plan.py`;
 const dataDir = () => `${appHome().replace(/\/+$/, "")}/data/agent-plans`;
 const clip = (s, n) => (s && s.length > n ? s.slice(0, n - 1).trimEnd() + "…" : s);
 
@@ -59,7 +60,9 @@ export default class AgentPlans extends View {
     this.plans = []; this.sig = ""; this.watching = false;
     this.pick = {};   // выбранный агент по space
     this.open = {};   // раскрытый этап по ключу плана (null — всё свёрнуто)
-    this.hooks = { claude: null, codex: null };
+    this.hooks = null;          // ответ plan.py status: { claude: {present, connected}, codex: {...} }
+    this.hookError = false;     // python3 не запустился
+    this.showConnect = false;   // строку подключения открыли шестерёнкой
     this.refresh(cx);
     this.checkHooks(cx);
     // Резерв к watchFolder; файлов единицы, чтение дешёвое. Перерисовка — только при изменениях.
@@ -102,16 +105,45 @@ export default class AgentPlans extends View {
     });
   }
 
-  // Подключены ли хуки (ищем путь к скрипту в глобальных конфигах агентов).
-  checkHooks(cx) {
+  // Подключены ли хуки — спрашиваем сам скрипт; он же подключает и отключает.
+  checkHooks(cx, args = ["status"]) {
     cx.spawn(async (cx) => {
-      const has = async (path) => {
-        try { return (await readTextFile(path)).includes(HOOK_MARK); } catch { return null; }
-      };
-      const h = home().replace(/\/+$/, "");
-      this.hooks = { claude: await has(`${h}/.claude/settings.json`), codex: await has(`${h}/.codex/config.toml`) };
+      try {
+        const r = await exec("python3", [hookScript(), ...args]);
+        this.hooks = JSON.parse(r.stdout);
+        this.hookError = false;
+      } catch { this.hookError = true; }
+      this.busy = null;
       cx.notify();
     });
+  }
+
+  // «Connect: [Claude Code] [Codex]» — клик подключает или отключает хуки агента.
+  connectRow(t) {
+    const present = AGENTS.filter(([id]) => this.hooks?.[id]?.present);
+    const line = (text) => div().text_size(12).text_color(t.dim).whitespace_normal().line_height(1.4).child(text);
+    if (this.hookError) return v_flex().px(18).py(10).child(line("Agent Plans needs python3 on PATH to connect agents."));
+    if (!present.length) return null;
+    const missing = present.some(([id]) => !this.hooks[id].connected);
+    if (!missing && !this.showConnect) return null;
+    return v_flex().flex_none().gap(8).px(18).py(12).border_t(1).border_color(t.border)
+      .child(h_flex().gap(6).items_center().flex_wrap()
+        .child(div().text_size(12).text_color(t.muted).mr(2).child("Connect:"))
+        .children(present.map(([id, label]) => {
+          const on = this.hooks[id].connected;
+          return h_flex().id(`ap-connect-${id}`).h(26).px(10).gap(5).items_center().rounded(13).cursor_pointer()
+            .text_size(12).bg(on ? t.done + "24" : t.surface).text_color(on ? t.done : t.muted)
+            .hover((s) => s.bg(on ? t.done + "33" : t.hover))
+            .tooltip(on ? `Disconnect ${label}` : `Add Agent Plans hooks to ${label}`)
+            .on_click((_e, cx) => {
+              if (this.busy) return;
+              this.busy = id;
+              this.checkHooks(cx, [on ? "disconnect" : "connect", id]);
+            })
+            .when(on, (el) => el.child("✓"))
+            .child(this.busy === id ? "…" : label);
+        })))
+      .when(Boolean(this.hooks.codex?.connected), (el) => el.child(line("Approve once in Codex: /hooks")));
   }
 
   // Планы агентов показанного space: живые и недавно закрытые.
@@ -248,12 +280,10 @@ export default class AgentPlans extends View {
   }
 
   empty(t) {
-    const missing = Object.entries(this.hooks).filter(([, v]) => v === false).map(([k]) => (k === "claude" ? "Claude Code" : "Codex"));
     const line = (text, color = t.dim) => div().text_size(13).text_color(color).whitespace_normal().line_height(1.45).child(text);
     return v_flex().gap(10).px(6).py(4)
       .child(line("No plan in this space yet.", t.muted))
-      .child(line("Approve a plan in Claude Code plan mode or Codex Plan Mode, and its stages show up here."))
-      .when(missing.length > 0, (el) => el.child(line(`Hooks not connected for ${missing.join(" and ")} — see the Agent Plans README.`, t.blocked)));
+      .child(line("Approve a plan in Claude Code plan mode or Codex Plan Mode, and its stages show up here."));
   }
 
   render(cx) {
@@ -266,10 +296,16 @@ export default class AgentPlans extends View {
     const focusedKey = list.find((p) => p.terminal && (p.terminal === f?.agent || p.terminal === f?.terminal))?.key;
     const pickedKey = space && list.some((p) => p.key === this.pick[space.id]) ? this.pick[space.id] : null;
     const selected = list.find((p) => p.key === (pickedKey ?? focusedKey)) ?? list[0];
+    const row = this.connectRow(t);
 
     return v_flex().id("ap-root").size_full().bg(t.background).text_color(t.foreground)
       .child(h_flex().h(44).flex_none().pl(18).pr(10).gap(2).items_center()
         .child(div().flex_1().text_size(14).font_semibold().child("Plan"))
+        .child(div().id("ap-agents").size(26).rounded(6).flex().items_center().justify_center()
+          .text_color(this.showConnect ? t.foreground : t.dim).cursor_pointer().tooltip("Connected agents")
+          .hover((s) => s.bg(t.hover).text_color(t.foreground))
+          .on_click((_e, cx) => { this.showConnect = !this.showConnect; cx.notify(); })
+          .child(svg("mods/agent-plans/settings.svg").size(15)))
         .child(div().id("ap-repo").size(26).rounded(6).flex().items_center().justify_center()
           .text_color(t.dim).cursor_pointer().tooltip("Agent Plans on GitHub")
           .hover((s) => s.bg(t.hover).text_color(t.foreground))
@@ -282,6 +318,7 @@ export default class AgentPlans extends View {
           .child("✕")))
       .when(list.length > 1, (el) => el.child(this.chips(t, list, selected, space.id)))
       .child(v_flex().id("ap-scroll").flex_1().min_h(0).px(12).pb(12).overflow_y_scrollbar()
-        .child(selected ? this.plan(t, selected) : this.empty(t)));
+        .child(selected ? this.plan(t, selected) : this.empty(t)))
+      .when(Boolean(row), (el) => el.child(row));
   }
 }
