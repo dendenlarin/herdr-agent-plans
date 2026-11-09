@@ -30,19 +30,19 @@ The plan your coding agent approved, beside it: a **Plan** button after Files an
 
 - **Mod** `mods/agent-plans/`: `mod.json` `{ "place": "none", "title": "Plan" }`; `main.js` (one `View`, two roles: `props().button` → the button, else the panel); `plan.svg`, `github.svg`, `settings.svg` (Lucide); `hook/plan.py`.
 - **Layout blocks**: the `tabs` block wrapped in a 42px row `tab-bar` (not resizable) with `plans-button` (`{ mod: "agent-plans", props: { button: true } }`, 72px, `window_drag`); `plans` (`{ mod: "agent-plans" }`) as the third child of `panel-body`. `layouts/main-plans.json` is Herdr `main` 0.1.13 with both.
-- **herdr**: `spaces`, `agents`, `terminals`, `focused`, `layout`, `theme`, `shared`/`setShared` (`workspace.panels`), `props`, `run` (`layout.select`, `layout.show`, `layout.hide`), `appHome`, `home`, `readTextFile`, `watchFolder`, `exec`, `window`; `fs/promises` `readdir`, `mkdir`. Art from `mods/workspace-chrome/spinner.svg`.
-- **Data**: `<app home>/data/agent-plans/<terminal>.json`: `{ app, session, source, title, terminal, updated, steps: [{ text, status: "pending"|"in_progress"|"completed", items: [], active? }] }`.
+- **herdr**: `spaces`, `agents`, `terminals`, `focused`, `layout`, `theme`, `shared`/`setShared` (`workspace.panels`), `props`, `run` (`layout.select`, `layout.show`, `layout.hide`), `appHome`, `readTextFile`, `watchFolder`, `exec`, `window`; `fs/promises` `readdir`, `mkdir`. Art from `mods/workspace-chrome/spinner.svg`.
+- **Data**: `<app home>/data/agent-plans/<terminal>.json`: `{ app, session, source, title, terminal, updated, reminded?, steps: [{ text, status: "pending"|"in_progress"|"completed", items: [], active? }] }`.
 - **Hook script** `hook/plan.py` (Python 3, standard library):
   - `claude`: `PostToolUse` for `ExitPlanMode` (markdown from `tool_input.plan`, else the file at `planFilePath`), `TodoWrite`, `TaskCreate`/`TaskUpdate`; events `TaskCreated`/`TaskCompleted`. After a plan-mode plan it prints `hookSpecificOutput.additionalContext` telling Claude to run `plan.py next` after each stage.
   - `codex`: `Stop` (the last `<proposed_plan>…</proposed_plan>` in `last_assistant_message`), `UserPromptSubmit` (once per plan, `additionalContext` asking Codex to track stages with `update_plan`), `PostToolUse` `update_plan` (statuses copied onto the plan's stages when every name matches, else the steps replace the plan).
   - Markdown: title is the first `# `; stages are `## ` headings minus Context/Notes/Risks-style sections, and only explicit stages (`Step|Phase|Stage|Part|Этап|Шаг…` or numbered) plus the verification section when any heading is a stage; a stage's points are its top-level list items, shortened to the bold lead or the first sentence (110 chars). The first stage starts as current.
-  - CLI: `next`, `mark <n> done|doing|todo`, `set --title T "doing:…" "todo:…"`, `show`, `clear`. Without `HC_TERMINAL_ID` hooks do nothing and the CLI exits with an error. Hooks always exit 0. Atomic writes.
+  - CLI: `next`, `mark <n> done|doing|todo`, `set --title T "doing:…" "todo:…"`, `show`, `clear` (need `HC_TERMINAL_ID`); `status`, `connect|disconnect claude|codex`. Claude hooks without `HC_TERMINAL_ID` do nothing; Codex hooks look the terminal up (see Watch out). Hooks always exit 0. Atomic writes.
 - **Hooks**, written by `plan.py connect` (first change backs the config up as `<config>.bak-agent-plans`; `disconnect` removes exactly these entries — Claude: groups whose command contains `agent-plans/hook/plan.py`; Codex: the block between `# >>> agent-plans (Herdr Agent Plans)` and `# <<< agent-plans`): `~/.claude/settings.json` and `$CODEX_HOME/config.toml` (default `~/.codex`), the command `P="${HERDR_APP_HOME:-$HOME/.config/herdr-app}/mods/agent-plans/hook/plan.py"; [ -f "$P" ] && python3 "$P" claude || true` (`codex` for Codex). Exact entries in README.md.
 
 ## Watch out
 
 - Write `mod.json` (`"place": "none"`) before `main.js`: a new mod folder without it is docked into the shown layout on first sight.
-- Herdr's shipped layouts are read-only: use `main-plans` or add the two blocks to a layout of your own.
+- Installing: Herdr's shipped layouts are read-only. If the shown layout is the person's own, add the two blocks to it; otherwise copy `layouts/main-plans.json` and `layout.switch` to it. Don't connect hooks during install: the person does it with the Connect pills.
 - `hookSpecificOutput.additionalContext` is what reaches the agent; plain stdout from these hooks is ignored.
 - Codex's sandbox blocks writes outside the workspace, so `plan.py next` from Codex fails there unless the data folder is a writable root; Codex is told to use `update_plan` instead, whose hook runs outside the sandbox.
 - Codex skips new or changed hooks until they are trusted in `/hooks`.
@@ -57,7 +57,7 @@ The plan your coding agent approved, beside it: a **Plan** button after Files an
 - `herdr-app check ~/.config/herdr-app/mods/agent-plans` passes and `herdr-app status` lists no errors.
 - The Plan button sits after Changes; clicking it shows the panel, clicking again hides it; in another space the panel keeps that space's own state.
 - Approving a plan in Claude Code plan mode in a Herdr terminal creates `data/agent-plans/<terminal>.json` and the panel shows its stages, the first one current; `python3 …/plan.py next` in that terminal advances it.
-- A Codex Plan Mode plan in a Herdr terminal shows up after the turn ends; its `update_plan` calls move the stages.
+- A Codex Plan Mode plan in a Herdr terminal shows up once it is approved, also with the Codex app-server running the hooks; its `update_plan` calls move the stages.
 - With two agents' plans in one space, chips switch between them.
 - Only one stage card is open at a time.
 - Clicking a Connect pill adds the hooks (the config parses afterwards), clicking it again restores the config's previous entries.

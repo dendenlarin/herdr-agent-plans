@@ -27,19 +27,19 @@ Needs Herdr 0.1.13+, `python3`, and Claude Code and/or Codex.
 Read ~/.config/herdr-app/AGENTS.md, then add this mod: https://github.com/dendenlarin/herdr-agent-plans
 ```
 
-Or copy `mods/agent-plans/` to `~/.config/herdr-app/mods/` yourself.
+It copies the mod and adds the Plan button: to your own layout if you use one, otherwise as the included `main-plans` layout (Herdr's own layouts are read-only).
 
-**2. Add the Plan button.** Herdr's own layouts are read-only, so use the included one:
+<details>
+<summary>By hand</summary>
+
+Copy `mods/agent-plans/` to `~/.config/herdr-app/mods/`. Then either use the included layout:
 
 ```sh
 cp layouts/main-plans.json ~/.config/herdr-app/layouts/
 herdr-app do layout.switch '{"name":"main-plans"}'
 ```
 
-<details>
-<summary>Using your own layout instead</summary>
-
-Wrap the `tabs` block in a row with the button:
+or, in a layout of your own, wrap the `tabs` block in a row with the button:
 
 ```json
 { "id": "tab-bar", "type": "row", "size": { "px": 42 }, "resizable": false, "children": [
@@ -55,7 +55,7 @@ and add a third child to the `panel-body` stack:
 ```
 </details>
 
-**3. Connect your agents.** Open the Plan panel and click **Claude Code** or **Codex** under *Connect*. That adds the hooks (a backup of the config is kept next to it); click again to remove them. In Codex, approve the new hooks once with `/hooks`. The ⚙ in the panel header brings the buttons back later.
+**2. Connect your agents.** Open the Plan panel and click **Claude Code** or **Codex** under *Connect*. That adds the hooks (a backup of the config is kept next to it); click again to remove them. In Codex, approve the new hooks once with `/hooks`. The ⚙ in the panel header brings the buttons back later.
 
 <details>
 <summary>What Connect adds</summary>
@@ -89,6 +89,7 @@ Click the connected agents in the panel to remove the hooks, then delete `mods/a
 - Only this computer's agents are shown.
 - A stage is marked when the agent says so: if it forgets, the panel lags behind.
 - Codex runs its hooks in a shared background server, so the hook finds the Codex terminal by its folder and, with several Codex in one folder, by the thread name in the terminal title. If it still can't tell, the plan isn't shown.
+- `main-plans` is a copy of Herdr's `main` 0.1.13 and doesn't pick up later changes to `main`.
 - Want a whole-project map instead? See [agenttrail](https://github.com/sodiumsun/agenttrail).
 
 MIT License
