@@ -108,6 +108,7 @@ Delete the hook entries, `mods/agent-plans/`, `data/agent-plans/` and the layout
 
 - Only this computer's agents are shown.
 - A stage is marked when the agent says so: if it forgets, the panel lags behind.
+- Codex runs its hooks in a shared background server, so the hook finds the Codex terminal by its folder and, with several Codex in one folder, by the thread name in the terminal title. If it still can't tell, the plan isn't shown.
 - Want a whole-project map instead? See [agenttrail](https://github.com/sodiumsun/agenttrail).
 
 MIT License
