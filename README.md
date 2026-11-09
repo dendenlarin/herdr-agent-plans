@@ -6,6 +6,8 @@ Approve a plan in **Claude Code** plan mode or **Codex** Plan Mode, and its stag
 
 No daemon, no plan files in your repos — two small hooks and a panel.
 
+<p align="center"><img src="preview.png" alt="Agent Plans panel" width="343"></p>
+
 ## How it works
 
 | | Plan comes from | Progress |
