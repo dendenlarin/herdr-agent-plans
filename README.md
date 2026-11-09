@@ -53,56 +53,34 @@ and add a third child to the `panel-body` stack:
 ```
 </details>
 
-**3. Connect the hooks.** Add the entries below. Each one does nothing if the mod is removed. In Codex, approve them once in `/hooks`.
+**3. Connect your agents.** Open the Plan panel and click **Claude Code** or **Codex** under *Connect*. That adds the hooks (a backup of the config is kept next to it); click again to remove them. In Codex, approve the new hooks once with `/hooks`. The ⚙ in the panel header brings the buttons back later.
 
 <details>
-<summary>Claude Code — <code>~/.claude/settings.json</code>, inside <code>"hooks"</code></summary>
+<summary>What Connect adds</summary>
 
-```json
-"PostToolUse": [{ "matcher": "ExitPlanMode|TodoWrite|TaskCreate|TaskUpdate",
-  "hooks": [{ "type": "command", "timeout": 5,
-    "command": "P=\"${HERDR_APP_HOME:-$HOME/.config/herdr-app}/mods/agent-plans/hook/plan.py\"; [ -f \"$P\" ] && python3 \"$P\" claude || true" }] }],
-"TaskCreated":   [{ "hooks": [{ "type": "command", "timeout": 5, "command": "<same command>" }] }],
-"TaskCompleted": [{ "hooks": [{ "type": "command", "timeout": 5, "command": "<same command>" }] }]
+The same command for every hook; it does nothing if the mod is removed:
+
+```sh
+P="${HERDR_APP_HOME:-$HOME/.config/herdr-app}/mods/agent-plans/hook/plan.py"; [ -f "$P" ] && python3 "$P" claude || true   # codex for Codex
 ```
-</details>
 
-<details>
-<summary>Codex — <code>~/.codex/config.toml</code></summary>
+- `~/.claude/settings.json`: `PostToolUse` (matcher `ExitPlanMode|TodoWrite|TaskCreate|TaskUpdate`), `TaskCreated`, `TaskCompleted`.
+- `~/.codex/config.toml`: `Stop`, `UserPromptSubmit`, `PostToolUse` (matcher `^update_plan$`), between `# >>> agent-plans` and `# <<< agent-plans`.
 
-```toml
-# Herdr Agent Plans
-[[hooks.Stop]]
-[[hooks.Stop.hooks]]
-type = "command"
-command = 'P="${HERDR_APP_HOME:-$HOME/.config/herdr-app}/mods/agent-plans/hook/plan.py"; [ -f "$P" ] && python3 "$P" codex || true'
-timeout = 5
-
-[[hooks.UserPromptSubmit]]
-[[hooks.UserPromptSubmit.hooks]]
-type = "command"
-command = '<same command>'
-timeout = 5
-
-[[hooks.PostToolUse]]
-matcher = "^update_plan$"
-[[hooks.PostToolUse.hooks]]
-type = "command"
-command = '<same command>'
-timeout = 5
-```
+From a terminal: `python3 ~/.config/herdr-app/mods/agent-plans/hook/plan.py connect claude` (or `disconnect`, `status`).
 </details>
 
 ## What it touches
 
 - **Writes** one file per agent terminal: `~/.config/herdr-app/data/agent-plans/<terminal>.json`. Nothing in your repos.
-- **Reads** the hook input from Claude Code and Codex. The panel also checks your two agent configs for the hook entries.
+- **Changes your agent configs** only when you click Connect (see above).
+- **Reads** the hook input from Claude Code and Codex, and asks `hc` which terminal a Codex session runs in.
 - **Tells the agent**, once per plan, how to mark stages.
 - No network, no background process.
 
 ## Uninstall
 
-Delete the hook entries, `mods/agent-plans/`, `data/agent-plans/` and the layout (or its two blocks).
+Click the connected agents in the panel to remove the hooks, then delete `mods/agent-plans/`, `data/agent-plans/` and the layout (or its two blocks).
 
 ## Good to know
 

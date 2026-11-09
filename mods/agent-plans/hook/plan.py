@@ -14,6 +14,11 @@ CLI for agents (the terminal comes from $HC_TERMINAL_ID):
   plan.py clear
   plan.py show
 
+Connecting the hooks (used by the Plan panel's agent chips):
+  plan.py status                    {"claude": {"present", "connected"}, "codex": {...}}
+  plan.py connect claude|codex      add the hooks (backup: <config>.bak-agent-plans)
+  plan.py disconnect claude|codex   remove exactly these hooks
+
 Data: $HERDR_APP_HOME (default ~/.config/herdr-app) /data/agent-plans/<terminal>.json
 Debug log of raw hook input: set AGENT_PLANS_DEBUG=1 -> data/agent-plans/.log/events.jsonl
 """
@@ -384,6 +389,81 @@ def find_id(obj):
     return None
 
 
+# ---------- connecting hooks ----------
+
+HOOK_CMD = ('P="${HERDR_APP_HOME:-$HOME/.config/herdr-app}/mods/agent-plans/hook/plan.py"; '
+            '[ -f "$P" ] && python3 "$P" %s || true')
+MARK = "agent-plans/hook/plan.py"
+CLAUDE_CFG = os.path.expanduser("~/.claude/settings.json")
+CODEX_HOME = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
+CODEX_CFG = os.path.join(CODEX_HOME, "config.toml")
+CODEX_BEGIN, CODEX_END = "# >>> agent-plans (Herdr Agent Plans)", "# <<< agent-plans"
+CLAUDE_EVENTS = {"PostToolUse": "ExitPlanMode|TodoWrite|TaskCreate|TaskUpdate", "TaskCreated": None, "TaskCompleted": None}
+CODEX_EVENTS = {"Stop": None, "UserPromptSubmit": None, "PostToolUse": "^update_plan$"}
+
+
+def read(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        return ""
+
+
+def write_with_backup(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if os.path.exists(path) and not os.path.exists(path + ".bak-agent-plans"):
+        shutil.copy2(path, path + ".bak-agent-plans")
+    tmp = path + ".tmp-agent-plans"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def hook_status():
+    return {
+        "claude": {"present": os.path.isdir(os.path.dirname(CLAUDE_CFG)), "connected": MARK in read(CLAUDE_CFG)},
+        "codex": {"present": os.path.isdir(CODEX_HOME), "connected": MARK in read(CODEX_CFG)},
+    }
+
+
+def claude_set(on):
+    text = read(CLAUDE_CFG)
+    cfg = json.loads(text) if text.strip() else {}
+    hooks = cfg.setdefault("hooks", {})
+    # Remove our entries first (if any); leave everyone else's alone.
+    for event in list(hooks):
+        groups = [g for g in hooks[event] if MARK not in json.dumps(g)]
+        if groups:
+            hooks[event] = groups
+        else:
+            del hooks[event]
+    if on:
+        for event, matcher in CLAUDE_EVENTS.items():
+            group = {"hooks": [{"type": "command", "command": HOOK_CMD % "claude", "timeout": 5}]}
+            if matcher:
+                group = {"matcher": matcher, **group}
+            hooks.setdefault(event, []).append(group)
+    if not hooks:
+        del cfg["hooks"]
+    write_with_backup(CLAUDE_CFG, json.dumps(cfg, ensure_ascii=False, indent=2) + "\n")
+
+
+def codex_set(on):
+    text = read(CODEX_CFG)
+    # Our block strictly between the markers; the rest of the config stays as is.
+    text = re.sub(r"\n*" + re.escape(CODEX_BEGIN) + r".*?" + re.escape(CODEX_END) + r"\n?", "\n", text, flags=re.S)
+    if on:
+        cmd = HOOK_CMD % "codex"
+        block = [CODEX_BEGIN]
+        for event, matcher in CODEX_EVENTS.items():
+            block += [f"[[hooks.{event}]]"] + ([f'matcher = "{matcher}"'] if matcher else [])
+            block += [f"[[hooks.{event}.hooks]]", 'type = "command"', f"command = '{cmd}'", "timeout = 5", ""]
+        block[-1] = CODEX_END
+        text = text.rstrip("\n") + "\n\n" + "\n".join(block) + "\n"
+    write_with_backup(CODEX_CFG, text)
+
+
 # ---------- CLI ----------
 
 def cli(argv):
@@ -391,6 +471,13 @@ def cli(argv):
     key = terminal()
     if cmd in ("", "-h", "--help", "help"):
         print(__doc__)
+        return
+    if cmd == "status":
+        print(json.dumps(hook_status()))
+        return
+    if cmd in ("connect", "disconnect") and len(argv) == 2 and argv[1] in ("claude", "codex"):
+        (claude_set if argv[1] == "claude" else codex_set)(cmd == "connect")
+        print(json.dumps(hook_status()))
         return
     if not key:
         sys.exit("agent-plans: HC_TERMINAL_ID is not set; run this inside a Herdr terminal")
