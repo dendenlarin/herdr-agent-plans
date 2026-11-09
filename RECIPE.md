@@ -42,6 +42,8 @@ The plan your coding agent approved, beside it: a **Plan** button after Files an
 - `hookSpecificOutput.additionalContext` is what reaches the agent; plain stdout from these hooks is ignored.
 - Codex's sandbox blocks writes outside the workspace, so `plan.py next` from Codex fails there unless the data folder is a writable root; Codex is told to use `update_plan` instead, whose hook runs outside the sandbox.
 - Codex skips new or changed hooks until they are trusted in `/hooks`.
+- Codex hooks usually run in the shared `codex app-server`, not in the terminal, so `HC_TERMINAL_ID` is missing. The hook then asks `hc` for live `codex` terminals on this machine whose foreground folder is the session's `cwd`: one → that one; several → the one whose title (`<spinner> <thread name> | <project>`) matches the thread name from `<CODEX_HOME>/session_index.jsonl` (CODEX_HOME from `transcript_path`); still several → the only one `working`; else nothing is written.
+- An approved Codex plan starts a new thread whose first message begins `A previous agent produced the plan below` and holds the whole plan: `UserPromptSubmit` takes the plan from there. Codex plans are keyed by terminal, not session, since the thread id changes.
 - Recent Codex versions rarely call `update_plan` on their own; Plan Mode's `<proposed_plan>` is the reliable source.
 - Don't redraw on the 3s timer: every mod redraw redraws the window.
 - This computer only (`watchFolder` and file reads are local).

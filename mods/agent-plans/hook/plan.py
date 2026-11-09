@@ -20,6 +20,8 @@ Debug log of raw hook input: set AGENT_PLANS_DEBUG=1 -> data/agent-plans/.log/ev
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -46,6 +48,48 @@ def terminal():
     return t.replace("/", "_") if t else None
 
 
+def codex_terminal(data):
+    """Терминал Codex без HC_TERMINAL_ID: хуки Codex запускает общий фоновый app-server, а не процесс
+    в терминале. Ищем живые терминалы Codex с той же папкой; если их несколько — тот, чей заголовок
+    совпадает с названием треда. Неоднозначно — None (лучше не показать план, чем показать чужой)."""
+    hc = shutil.which("hc") or os.path.expanduser("~/.local/bin/hc")
+    run = lambda *a: json.loads(subprocess.run([hc, *a, "--json"], capture_output=True, text=True, timeout=3).stdout)
+    cwd = os.path.realpath(data.get("cwd") or "")
+    found = []
+    for t in run("ls").get("terminals", []):
+        if "/" in t["address"] or t.get("state") != "live" or t.get("agent") != "codex":
+            continue
+        info = run("get", t["address"])
+        fg = (info.get("foreground") or {}).get("cwd") or info.get("cwd") or ""
+        if os.path.realpath(fg) == cwd:
+            found.append(info)
+    if len(found) == 1:
+        return found[0]["address"]
+    name = thread_name(data)
+    # Заголовок вида «⠏ <название треда> | <проект>», название может быть обрезано.
+    title = lambda t: norm(re.sub(r"^\W+", "", (t.get("title") or "").split(" | ")[0]))
+    match = [t for t in found if name and len(title(t)) >= 8 and (name.startswith(title(t)) or title(t).startswith(name))]
+    if len(match) != 1:
+        # У нового треда названия может ещё не быть; хук идёт во время хода — терминал работает.
+        match = [t for t in found if (t.get("status") or {}).get("state") == "working"]
+    return match[0]["address"] if len(match) == 1 else None
+
+
+def thread_name(data):
+    """Название треда Codex по id сессии из <CODEX_HOME>/session_index.jsonl (последняя запись)."""
+    tp = data.get("transcript_path") or ""
+    home = tp.split(os.sep + "sessions" + os.sep)[0] if os.sep + "sessions" + os.sep in tp else os.path.expanduser("~/.codex")
+    name = None
+    try:
+        with open(os.path.join(home, "session_index.jsonl"), encoding="utf-8") as f:
+            for line in f:
+                if data.get("session_id", "-") in line:
+                    name = json.loads(line).get("thread_name") or name
+    except Exception:
+        pass
+    return norm(name) if name else None
+
+
 def path_for(key):
     return os.path.join(PLANS, key + ".json")
 
@@ -60,7 +104,7 @@ def load(key):
 
 def save(key, plan):
     os.makedirs(PLANS, exist_ok=True)
-    plan["terminal"] = os.environ.get("HC_TERMINAL_ID")
+    plan["terminal"] = key
     plan["updated"] = int(time.time() * 1000)
     # Атомарная запись: панель никогда не увидит половину файла.
     fd, tmp = tempfile.mkstemp(dir=PLANS, prefix=".tmp-")
@@ -185,6 +229,15 @@ def norm(s):
 # ---------- Codex ----------
 
 PROPOSED = re.compile(r"<proposed_plan>\s*\n(.*?)\n\s*</proposed_plan>", re.S)
+# Утверждённый план Codex начинает новый тред с таким сообщением и полным текстом плана.
+IMPLEMENT = "A previous agent produced the plan below"
+
+
+def codex_needs_terminal(data):
+    """Терминал ищем только для событий, которые что-то пишут: Stop — лишь с планом в ответе."""
+    if data.get("hook_event_name") == "Stop":
+        return bool(PROPOSED.search(data.get("last_assistant_message") or ""))
+    return True
 
 
 def from_codex(data, key):
@@ -199,9 +252,14 @@ def from_codex(data, key):
         return
 
     if event == "UserPromptSubmit":
-        # Первый запрос после плана (обычно «выполняй») — один раз напомнить, как отмечать этапы.
+        prompt = data.get("prompt") or ""
+        if IMPLEMENT in prompt[:400]:
+            # Тред выполнения утверждённого плана: план — в самом сообщении.
+            plan_from_markdown(key, "codex", session, prompt, "plan-mode")
+        # Первый запрос после плана — один раз напомнить, как отмечать этапы.
+        # План привязан к терминалу: тред выполнения у Codex новый, его id другой.
         plan = load(key)
-        if (plan and plan.get("app") == "codex" and plan.get("session") == session
+        if (plan and plan.get("app") == "codex"
                 and plan.get("source") == "plan-mode" and not plan.get("reminded")
                 and any(s["status"] != "completed" for s in plan["steps"])):
             plan["reminded"] = True
@@ -216,7 +274,7 @@ def from_codex(data, key):
         if not new:
             return
         old = load(key) or {}
-        if old.get("session") == session and old.get("steps"):
+        if old.get("app") == "codex" and old.get("steps"):
             # Этапы совпадают с планом из Plan Mode — переносим только статусы, пункты сохраняем.
             by_name = {norm(s["text"]): s for s in old["steps"]}
             if all(norm(s["text"]) in by_name for s in new):
@@ -225,7 +283,7 @@ def from_codex(data, key):
                 save(key, old)
                 return
         save(key, {"app": "codex", "session": session, "source": "update_plan",
-                   "title": old.get("title", "") if old.get("session") == session else "",
+                   "title": old.get("title", "") if old.get("app") == "codex" else "",
                    "note": inp.get("explanation") or "", "steps": new})
 
 
@@ -389,9 +447,14 @@ def main():
         try:
             data = json.loads(sys.stdin.read() or "{}")
             debug_log(mode, data)
-            key = terminal()
-            if key:
-                (from_codex if mode == "codex" else from_claude)(data, key)
+            if mode == "claude":
+                key = terminal()
+                if key:
+                    from_claude(data, key)
+            elif codex_needs_terminal(data):
+                key = terminal() or codex_terminal(data)
+                if key:
+                    from_codex(data, key)
         except Exception as e:  # хук не должен ломать агента
             debug_log(mode + "-error", {"error": repr(e)})
         sys.exit(0)
