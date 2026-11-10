@@ -29,7 +29,7 @@ The plan your coding agent approved, beside it: a **Plan** button after Files an
 ## Built from
 
 - **Mod** `mods/agent-plans/`: `mod.json` `{ "place": "none", "title": "Plan" }`; `main.js` (one `View`, two roles: `props().button` → the button, else the panel); `plan.svg`, `github.svg`, `settings.svg` (Lucide); `hook/plan.py`.
-- **Layout blocks**: the `tabs` block wrapped in a 42px row `tab-bar` (not resizable) with `plans-button` (`{ mod: "agent-plans", props: { button: true } }`, 72px, `window_drag`); `plans` (`{ mod: "agent-plans" }`) as the third child of `panel-body`. `layouts/main-plans.json` is Herdr `main` 0.1.13 with both.
+- **Layout blocks**: the `tabs` block wrapped in a 42px row `tab-bar` (not resizable) with `plans-button` (`{ mod: "agent-plans", props: { button: true } }`, 72px, `window_drag`); `plans` (`{ mod: "agent-plans" }`) as the third child of `panel-body`. `examples/main-plans.json` is Herdr `main` 0.1.13 with both.
 - **herdr**: `spaces`, `agents`, `terminals`, `focused`, `layout`, `theme`, `shared`/`setShared` (`workspace.panels`), `props`, `run` (`layout.select`, `layout.show`, `layout.hide`), `appHome`, `readTextFile`, `watchFolder`, `exec`, `window`; `fs/promises` `readdir`, `mkdir`. Art from `mods/workspace-chrome/spinner.svg`.
 - **Data**: `<app home>/data/agent-plans/<terminal>.json`: `{ app, session, source, title, terminal, updated, reminded?, steps: [{ text, status: "pending"|"in_progress"|"completed", items: [], active? }] }`.
 - **Hook script** `hook/plan.py` (Python 3, standard library):
@@ -42,7 +42,7 @@ The plan your coding agent approved, beside it: a **Plan** button after Files an
 ## Watch out
 
 - Write `mod.json` (`"place": "none"`) before `main.js`: a new mod folder without it is docked into the shown layout on first sight.
-- Installing: Herdr's shipped layouts are read-only. If the shown layout is the person's own, add the two blocks to it; otherwise copy `layouts/main-plans.json` and `layout.switch` to it. Don't connect hooks during install: the person does it with the Connect pills.
+- Installing: Herdr's shipped layouts are read-only. If the shown layout is the person's own, add the two blocks to it; otherwise copy `examples/main-plans.json` and `layout.switch` to it. Don't connect hooks during install: the person does it with the Connect pills.
 - `hookSpecificOutput.additionalContext` is what reaches the agent; plain stdout from these hooks is ignored.
 - Codex's sandbox blocks writes outside the workspace, so `plan.py next` from Codex fails there unless the data folder is a writable root; Codex is told to use `update_plan` instead, whose hook runs outside the sandbox.
 - Codex skips new or changed hooks until they are trusted in `/hooks`.
