@@ -46,7 +46,7 @@ It copies the mod and adds the Plan button: to your own layout if you use one, o
 Copy `mods/agent-plans/` to `~/.config/herdr-app/mods/`. Then either use the included layout:
 
 ```sh
-cp layouts/main-plans.json ~/.config/herdr-app/layouts/
+cp examples/main-plans.json ~/.config/herdr-app/layouts/
 herdr-app do layout.switch '{"name":"main-plans"}'
 ```
 
