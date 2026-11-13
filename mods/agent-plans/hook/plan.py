@@ -183,12 +183,55 @@ def reminder(app):
 
 # ---------- markdown plan parsing ----------
 
-# Plan sections that are not work stages (English and Russian headings).
-SKIP_SECTIONS = ("context", "контекст", "background", "предыстория", "итог", "summary", "вопросы",
-                 "questions", "риски", "risks", "ссылки", "links", "notes", "заметки", "overview", "обзор")
-SKIP_ANYWHERE = ("context", "контекст", "out of scope", "non-goals", "вне объ", "не входит")
-STAGE = re.compile(r"^(этап|шаг|фаза|часть|step|phase|stage|part|milestone)\b|^\d+[.)]?\s", re.I)
-VERIFY = re.compile(r"^(проверка|верификация|тест|verification|verify|testing|validation|test plan)", re.I)
+# Heading words, one line per language: English, Russian, Spanish, Portuguese, French, German,
+# Chinese, Japanese. Numbered headings ("1. ...") work in any language without them.
+
+# Sections that are not work stages: a heading starting with one of these...
+SKIP_SECTIONS = (
+    "context", "background", "summary", "questions", "risks", "links", "notes", "overview",
+    "контекст", "предыстория", "итог", "вопросы", "риски", "ссылки", "заметки", "обзор",
+    "antecedentes", "resumen", "preguntas", "riesgos", "enlaces", "notas", "referencias",
+    "resumo", "perguntas", "riscos", "visão geral",
+    "résumé", "risques", "liens", "aperçu", "vue d'ensemble",
+    "hintergrund", "zusammenfassung", "fragen", "risiken", "notizen", "anmerkungen", "überblick",
+    "背景", "上下文", "概述", "总结", "摘要", "疑问", "风险", "备注", "参考", "链接",
+    "コンテキスト", "概要", "まとめ", "質問", "リスク", "メモ", "参考", "リンク",
+)
+# ...or containing one of these.
+SKIP_ANYWHERE = (
+    "context", "out of scope", "non-goals",
+    "контекст", "вне объ", "не входит",
+    "fuera del alcance", "fora do escopo", "hors périmètre", "hors du périmètre",
+    "kontext", "außerhalb des umfangs", "nicht im umfang",
+    "范围外", "不在范围", "スコープ外", "対象外",
+)
+# Explicit stages: a word and then no letter ("Step 2", "Étape 1"; not "Steps"), a CJK word with
+# a number ("步骤1", "第一阶段", "ステップ2"), or a number ("3. ...", "1、...").
+STAGE_WORDS = (
+    "step", "phase", "stage", "part", "milestone",
+    "этап", "шаг", "фаза", "часть",
+    "paso", "fase", "etapa", "parte",
+    "passo",
+    "étape", "partie",
+    "schritt", "teil", "stufe",
+)
+CJK_NUM = r"\s*[\d一二三四五六七八九十]"
+STAGE = re.compile(
+    r"^(?:%s)(?![^\W\d_])" % "|".join(STAGE_WORDS)
+    + r"|^(?:步骤|阶段|ステップ|フェーズ|段階|手順)" + CJK_NUM
+    + r"|^第" + CJK_NUM
+    + r"|^\d+(?:[.)]?\s|[、．])", re.I)
+# The verification section stays among explicit stages.
+VERIFY = re.compile(r"^(?:%s)" % "|".join((
+    "verification", "verify", "testing", "tests", "validation", "test plan",
+    "проверка", "верификация", "тест",
+    "verificación", "pruebas", "validación",
+    "verificação", "testes", "validação",
+    "vérification",
+    "überprüfung", "prüfung", "verifizierung", "validierung",
+    "验证", "测试", "检查",
+    "検証", "テスト", "確認",
+)), re.I)
 
 
 def clean(s):

@@ -99,6 +99,7 @@ Click the connected agents in the panel to remove the hooks, then delete `mods/a
 
 - Only this computer's agents are shown.
 - A stage is marked when the agent says so: if it forgets, the panel lags behind.
+- Plans are split into stages by their headings in English, Russian, Spanish, Portuguese, French, German, Chinese and Japanese; numbered headings work in any language. Tests: `python3 -m unittest discover tests`.
 - Codex runs its hooks in a shared background server, so the hook finds the Codex terminal by its folder and, with several Codex in one folder, by the thread name in the terminal title. If it still can't tell, the plan isn't shown.
 - `main-plans` is a copy of Herdr's `main` 0.1.13 and doesn't pick up later changes to `main`.
 
