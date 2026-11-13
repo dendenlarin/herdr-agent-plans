@@ -22,6 +22,7 @@ Connecting the hooks (used by the Plan panel's agent chips):
 Data: $HERDR_APP_HOME (default ~/.config/herdr-app) /data/agent-plans/<terminal>.json
 Debug log of raw hook input: set AGENT_PLANS_DEBUG=1 -> data/agent-plans/.log/events.jsonl
 """
+import contextlib
 import json
 import os
 import re
@@ -30,6 +31,11 @@ import subprocess
 import sys
 import tempfile
 import time
+
+try:
+    import fcntl
+except ImportError:  # Windows: без блокировки
+    fcntl = None
 
 HOME = os.environ.get("HERDR_APP_HOME") or os.path.expanduser("~/.config/herdr-app")
 PLANS = os.path.join(HOME, "data", "agent-plans")
@@ -111,6 +117,16 @@ def load(key):
         return None
 
 
+@contextlib.contextmanager
+def locked():
+    """Хуки идут параллельно (несколько TaskCreate за ход): читаем и пишем план по очереди."""
+    os.makedirs(PLANS, exist_ok=True)
+    with open(os.path.join(PLANS, ".lock"), "a") as f:
+        if fcntl:
+            fcntl.flock(f, fcntl.LOCK_EX)
+        yield
+
+
 def save(key, plan):
     os.makedirs(PLANS, exist_ok=True)
     plan["terminal"] = key
@@ -170,6 +186,7 @@ def reminder(app):
 # Разделы плана, которые не являются шагами работы.
 SKIP_SECTIONS = ("context", "контекст", "background", "предыстория", "итог", "summary", "вопросы",
                  "questions", "риски", "risks", "ссылки", "links", "notes", "заметки", "overview", "обзор")
+SKIP_ANYWHERE = ("context", "контекст", "out of scope", "non-goals", "вне объ", "не входит")
 STAGE = re.compile(r"^(этап|шаг|фаза|часть|step|phase|stage|part|milestone)\b|^\d+[.)]?\s", re.I)
 VERIFY = re.compile(r"^(проверка|верификация|тест|verification|verify|testing|validation|test plan)", re.I)
 
@@ -188,30 +205,49 @@ def short(item):
     return t if len(t) <= 110 else t[:107].rstrip() + "…"
 
 
+def is_service(head):
+    h = head.lower()
+    return h.startswith(SKIP_SECTIONS) or any(w in h for w in SKIP_ANYWHERE)
+
+
 def parse_markdown_plan(text):
-    """Название — первый «# ». Этапы — заголовки «## » без служебных разделов; если есть явные
-    этапы («Этап 1», «Step 2», «3. …»), остаются только они и раздел проверки. Пункты этапа —
-    его список верхнего уровня. Без «## » этапы берутся из нумерованного списка."""
-    title, sections, numbered, cur = "", [], [], None
+    """Название — первый «# ». Этапы — разделы «## » без служебных; если среди них нет явных
+    этапов («Этап 1», «Step 2», «3. …»), раздел с подзаголовками «### » заменяют они (кроме
+    проверки). Если явные этапы есть, остаются только они и проверка. Пункты этапа — его список
+    верхнего уровня. Без заголовков — нумерованный список. Блоки кода пропускаются."""
+    title, sections, numbered, parent, cur, code = "", [], [], None, None, False
     for line in (text or "").splitlines():
-        m = re.match(r"^#\s+(.+)", line)
-        if m and not title:
-            title = m.group(1).strip()
+        if line.lstrip().startswith(("```", "~~~")):
+            code = not code
             continue
-        m = re.match(r"^##\s+(.+)", line)
+        if code:
+            continue
+        m = re.match(r"^(#{1,3})\s+(.+)", line)
         if m:
-            cur = {"head": m.group(1).strip(), "items": []}
-            sections.append(cur)
+            head = m.group(2).strip()
+            if len(m.group(1)) == 1:
+                title = title or head
+            elif len(m.group(1)) == 2 or parent is None:
+                parent = cur = {"head": head, "items": [], "kids": []}
+                sections.append(cur)
+            else:
+                cur = {"head": head, "items": []}
+                parent["kids"].append(cur)
             continue
         m = re.match(r"^(?:[-*]|\d+[.)])\s+(.+)", line)  # пункт верхнего уровня, без отступа
         if m:
             if cur is not None:
                 cur["items"].append(m.group(1).strip())
+                if cur is not parent:
+                    parent["items"].append(m.group(1).strip())
             elif re.match(r"^\d", line):
                 numbered.append(m.group(1).strip())
-    work = [s for s in sections
-            if not s["head"].lower().startswith(SKIP_SECTIONS)
-            and not any(w in s["head"].lower() for w in ("context", "контекст"))]
+    work = [s for s in sections if not is_service(s["head"])]
+    if not any(STAGE.match(s["head"]) for s in work):
+        # «## Шаги» → «### 1. …»: этапы на уровень ниже.
+        work = [k for s in work for k in
+                ([k for k in s["kids"] if not is_service(k["head"])]
+                 if s["kids"] and not VERIFY.match(s["head"]) else [s])]
     if any(STAGE.match(s["head"]) for s in work):
         work = [s for s in work if STAGE.match(s["head"]) or VERIFY.match(s["head"])]
     if work:
@@ -418,10 +454,11 @@ def write_with_backup(path, text):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     if os.path.exists(path) and not os.path.exists(path + ".bak-agent-plans"):
         shutil.copy2(path, path + ".bak-agent-plans")
-    tmp = path + ".tmp-agent-plans"
+    real = os.path.realpath(path)  # симлинк (dotfiles) остаётся симлинком
+    tmp = real + ".tmp-agent-plans"
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(text)
-    os.replace(tmp, path)
+    os.replace(tmp, real)
 
 
 def hook_status():
@@ -465,6 +502,11 @@ def codex_set(on):
             block += [f"[[hooks.{event}.hooks]]", 'type = "command"', f"command = '{cmd}'", "timeout = 5", ""]
         block[-1] = CODEX_END
         text = text.rstrip("\n") + "\n\n" + "\n".join(block) + "\n"
+        try:
+            import tomllib  # Python 3.11+: не записываем конфиг, который Codex не прочтёт
+            tomllib.loads(text)
+        except ImportError:
+            pass
     write_with_backup(CODEX_CFG, text)
 
 
@@ -489,6 +531,11 @@ def cli(argv):
         return
     if not key:
         sys.exit("agent-plans: HC_TERMINAL_ID is not set; run this inside a Herdr terminal")
+    with locked():
+        edit_plan(cmd, argv, key)
+
+
+def edit_plan(cmd, argv, key):
     if cmd == "clear":
         try:
             os.remove(path_for(key))
@@ -531,6 +578,10 @@ def cli(argv):
         steps[i]["status"] = STATUS[argv[2]]
     else:
         sys.exit(__doc__)
+    # План из задач Claude: следующий TaskUpdate пересобирает этапы из tasks — обновляем и их.
+    for s in steps:
+        if s.get("id") in plan.get("tasks", {}):
+            plan["tasks"][s["id"]]["status"] = s["status"]
     save(key, plan)
     done = sum(s["status"] == "completed" for s in steps)
     print(f"agent-plans: {done}/{len(steps)} done")
@@ -545,11 +596,13 @@ def main():
             if mode == "claude":
                 key = terminal()
                 if key:
-                    from_claude(data, key)
+                    with locked():
+                        from_claude(data, key)
             elif codex_needs_terminal(data):
-                key = terminal() or codex_terminal(data)
+                key = terminal() or codex_terminal(data)  # поиск через hc — до блокировки
                 if key:
-                    from_codex(data, key)
+                    with locked():
+                        from_codex(data, key)
         except Exception as e:  # хук не должен ломать агента
             debug_log(mode + "-error", {"error": repr(e)})
         sys.exit(0)
