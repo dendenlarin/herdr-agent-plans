@@ -64,9 +64,9 @@ def terminal():
 
 
 def codex_terminal(data):
-    """Codex terminal without HC_TERMINAL_ID: Codex runs hooks in a shared background app-server, not a process
-    in the terminal. Look for live Codex terminals in the same folder; if several, the one whose title
-    matches the thread name. Ambiguous -> None (better no plan than someone else's)."""
+    """Codex terminal without HC_TERMINAL_ID: Codex runs hooks in a shared background app-server,
+    not in the terminal. Look for live Codex terminals in the same folder; if several, the one
+    whose title matches the thread name. Ambiguous -> None (better no plan than someone else's)."""
     hc = shutil.which("hc") or os.path.expanduser("~/.local/bin/hc")
     run = lambda *a: json.loads(subprocess.run([hc, *a, "--json"], capture_output=True, text=True, timeout=3).stdout)
     cwd = os.path.realpath(data.get("cwd") or "")
@@ -183,7 +183,7 @@ def reminder(app):
 
 # ---------- markdown plan parsing ----------
 
-# Plan sections that are not work stages.
+# Plan sections that are not work stages (English and Russian headings).
 SKIP_SECTIONS = ("context", "контекст", "background", "предыстория", "итог", "summary", "вопросы",
                  "questions", "риски", "risks", "ссылки", "links", "notes", "заметки", "overview", "обзор")
 SKIP_ANYWHERE = ("context", "контекст", "out of scope", "non-goals", "вне объ", "не входит")
@@ -211,10 +211,11 @@ def is_service(head):
 
 
 def parse_markdown_plan(text):
-    """Title: the first "# ". Stages: "## " sections minus service ones; if none of them is an explicit
-    stages ("Step 1", "Phase 2", "3. ..."), a section with "### " subheadings is replaced by them (except
-    verification). If explicit stages exist, only they and verification stay. A stage's points are its top-
-    level list. No headings: the numbered list. Code blocks are skipped."""
+    """Title: the first "# ". Stages: "## " sections minus service ones. If none of them is an
+    explicit stage ("Step 1", "Phase 2", "3. ..."), a section with "### " subheadings is replaced
+    by them (except verification); if any is, only explicit stages and verification stay.
+    A stage's points are its top-level list items. No headings: the numbered list.
+    Code blocks are skipped."""
     title, sections, numbered, parent, cur, code = "", [], [], None, None, False
     for line in (text or "").splitlines():
         if line.lstrip().startswith(("```", "~~~")):
