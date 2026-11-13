@@ -26,7 +26,7 @@ No daemon, no plan files in your repos — two small hooks and a panel.
 | **Claude Code** | the plan you approve in plan mode (also `TodoWrite`, `TaskCreate` / `TaskUpdate`) | Claude marks each stage done with `plan.py next` |
 | **Codex** | the `<proposed_plan>` of Plan Mode (also `update_plan`) | Codex marks stages with its `update_plan` tool |
 
-The hooks remind the agent how to mark stages, once per plan. Plans are tied to the agent's Herdr terminal, so several agents in one repo never mix up.
+Once per plan, the hooks show the agent the stages they found and how to mark them; if the split is off, the agent corrects it. Plans are tied to the agent's Herdr terminal, so several agents in one repo never mix up.
 
 ## Install
 
@@ -85,10 +85,10 @@ From a terminal: `python3 ~/.config/herdr-app/mods/agent-plans/hook/plan.py conn
 
 ## What it touches
 
-- **Writes** one file per agent terminal: `~/.config/herdr-app/data/agent-plans/<terminal>.json`. Nothing in your repos.
+- **Writes** one file per agent terminal: `~/.config/herdr-app/data/agent-plans/<terminal>.json`, deleted after a week without updates. Nothing in your repos.
 - **Changes your agent configs** only when you click Connect (see above).
 - **Reads** the hook input from Claude Code and Codex, and asks `hc` which terminal a Codex session runs in.
-- **Tells the agent**, once per plan, how to mark stages.
+- **Tells the agent**, once per plan, the stages it shows and how to mark or correct them.
 - No network, no background process.
 
 ## Uninstall

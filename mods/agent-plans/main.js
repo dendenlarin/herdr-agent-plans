@@ -8,7 +8,7 @@ import { spaces, terminals, agents, focused, layout, run, theme, shared, setShar
 import * as fs from "fs/promises";
 
 const PANEL = "plans";            // tab id in the panel-body stack
-const STALE_MS = 30 * 60 * 1000;  // a closed terminal's plan stays visible for half an hour
+const STALE_MS = 30 * 60 * 1000;  // a plan whose agent has gone stays visible for half an hour
 const ICON = "mods/agent-plans/plan.svg";
 const SPINNER = "mods/workspace-chrome/spinner.svg";
 const REPO = "https://github.com/dendenlarin/herdr-agent-plans";
@@ -158,7 +158,10 @@ export default class AgentPlans extends View {
         const term = terms.get(p.terminal);
         const agent = ags.get(p.terminal);
         const space = agent?.space ?? term?.labels?.["herdr.space"] ?? null;
-        return { ...p, term, agent, space, live: term?.state === "live" };
+        // Live while its agent runs there. A shell left behind (the agent exited, or the terminal
+        // came back after a reboot under the same address) doesn't keep an old plan up.
+        const live = Boolean(agent) || (term?.state === "live" && term?.agent === p.app);
+        return { ...p, term, agent, space, live };
       })
       .filter((p) => p.space === spaceId && (p.live || Date.now() - (p.updated ?? 0) < STALE_MS))
       .sort((a, b) => (Number(b.live) - Number(a.live)) || ((b.updated ?? 0) - (a.updated ?? 0)));

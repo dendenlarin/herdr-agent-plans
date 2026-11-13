@@ -41,6 +41,7 @@ HOME = os.environ.get("HERDR_APP_HOME") or os.path.expanduser("~/.config/herdr-a
 PLANS = os.path.join(HOME, "data", "agent-plans")
 LOG = os.path.join(PLANS, ".log", "events.jsonl")
 LOG_KEEP = 200
+KEEP_DAYS = 7  # plans not updated for this long are deleted
 SELF = os.path.abspath(__file__)
 
 # Every status maps to one of three words.
@@ -136,6 +137,19 @@ def save(key, plan):
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(plan, f, ensure_ascii=False, indent=1)
     os.replace(tmp, path_for(key))
+    prune()
+
+
+def prune():
+    """Delete plans (and leftover temp files) not updated for KEEP_DAYS: the folder stays small."""
+    cutoff = time.time() - KEEP_DAYS * 86400
+    for name in os.listdir(PLANS):
+        path = os.path.join(PLANS, name)
+        try:
+            if (name.endswith(".json") or name.startswith(".tmp-")) and os.path.getmtime(path) < cutoff:
+                os.remove(path)
+        except OSError:
+            pass
 
 
 def debug_log(kind, data):
@@ -170,15 +184,19 @@ def emit_context(event, text):
     print(json.dumps({"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}))
 
 
-def reminder(app):
-    cmd = f'python3 "{SELF}" next'
+def reminder(app, steps):
+    """Once per plan: the stages as parsed, how to correct them and how to mark progress."""
+    cmd = f'python3 "{SELF}"'
+    stages = "\n".join(f"{i}. {s['text']}" for i, s in enumerate(steps, 1))
+    head = f"Herdr Agent Plans shows this approved plan in the Plan panel as these stages:\n{stages}\n"
     if app == "codex":
-        return ("Herdr Agent Plans shows this approved plan's stages in the Plan panel. "
-                "Track progress with your update_plan tool, using the stage names from the plan, "
-                f"and mark a stage completed as soon as it is done. If update_plan is unavailable, run: {cmd}")
-    return ("Herdr Agent Plans shows this approved plan's stages in the Plan panel. "
-            f"Each time you finish a stage, immediately run: {cmd}  "
-            "(marks the current stage done and starts the next one).")
+        return head + ("If they don't match the plan's stages, call update_plan with the right ones: they replace these. "
+                       "Track progress with update_plan using the stage names, and mark a stage completed as soon as "
+                       f"it is done. If update_plan is unavailable, run: {cmd} next")
+    return head + ("If they don't match the plan's stages, replace them: "
+                   f'{cmd} set --title "<plan title>" "doing:<first stage>" "todo:<next stage>" ...\n'
+                   f"Each time you finish a stage, immediately run: {cmd} next  "
+                   "(marks the current stage done and starts the next one).")
 
 
 # ---------- markdown plan parsing ----------
@@ -260,12 +278,12 @@ def parse_markdown_plan(text):
 
 
 def plan_from_markdown(key, app, session, text, source):
+    """Save the parsed plan with its first stage current; return its steps (empty if none)."""
     title, steps = parse_markdown_plan(text)
-    if not steps:
-        return False
-    steps[0]["status"] = "in_progress"
-    save(key, {"app": app, "session": session, "source": source, "title": title, "steps": steps})
-    return True
+    if steps:
+        steps[0]["status"] = "in_progress"
+        save(key, {"app": app, "session": session, "source": source, "title": title, "steps": steps})
+    return steps
 
 
 def norm(s):
@@ -310,7 +328,7 @@ def from_codex(data, key):
                 and any(s["status"] != "completed" for s in plan["steps"])):
             plan["reminded"] = True
             save(key, plan)
-            emit_context("UserPromptSubmit", reminder("codex"))
+            emit_context("UserPromptSubmit", reminder("codex", plan["steps"]))
         return
 
     if data.get("tool_name") == "update_plan":
@@ -355,8 +373,9 @@ def from_claude(data, key):
                     text = f.read()
             except Exception:
                 pass
-        if plan_from_markdown(key, "claude-code", session, text, "plan-mode"):
-            emit_context("PostToolUse", reminder("claude"))
+        steps = plan_from_markdown(key, "claude-code", session, text, "plan-mode")
+        if steps:
+            emit_context("PostToolUse", reminder("claude", steps))
         return
 
     if tool == "TodoWrite":
