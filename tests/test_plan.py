@@ -75,6 +75,101 @@ class Hook(unittest.TestCase):
                        "tool_input": {"todos": [{"content": "a", "status": "pending"}]}})
         self.assertEqual(sorted(n for n in os.listdir(self.plans) if n.endswith(".json")), ["t1.json", "t8.json"])
 
+    def plan(self):
+        with open(os.path.join(self.plans, "t1.json")) as f:
+            return [s["status"] for s in json.load(f)["steps"]]
+
+    def cli(self, *args):
+        return subprocess.run([sys.executable, HOOK, *args], capture_output=True, text=True,
+                              env=self.env, check=True).stdout
+
+    def approve(self, session="s"):
+        self.run_hook({"hook_event_name": "PostToolUse", "tool_name": "ExitPlanMode", "session_id": session,
+                       "tool_input": {"plan": "# T\n## Step 1. A\n## Step 2. B\n## Verification\n"}})
+
+    def test_stop_finishes_only_the_last_open_stage(self):
+        self.approve()
+        stop = {"hook_event_name": "Stop", "session_id": "s"}
+        self.run_hook(stop)  # stage 1 still open: nothing to finish
+        self.assertEqual(self.plan(), ["in_progress", "pending", "pending"])
+        self.cli("next"), self.cli("next")
+        self.run_hook({**stop, "session_id": "other"})  # another session's Stop leaves it alone
+        self.assertEqual(self.plan(), ["completed", "completed", "in_progress"])
+        self.run_hook(stop)
+        self.assertEqual(self.plan(), ["completed", "completed", "completed"])
+
+    def test_stop_leaves_todos_alone(self):
+        self.run_hook({"hook_event_name": "PostToolUse", "tool_name": "TodoWrite", "session_id": "s",
+                       "tool_input": {"todos": [{"content": "a", "status": "in_progress"}]}})
+        self.run_hook({"hook_event_name": "Stop", "session_id": "s"})
+        self.assertEqual(self.plan(), ["in_progress"])
+
+    def test_codex_stop_finishes_last_stage(self):
+        run = lambda e: subprocess.run([sys.executable, HOOK, "codex"], input=json.dumps(e), text=True,
+                                       env=self.env, check=True)
+        run({"hook_event_name": "Stop", "session_id": "s",
+             "last_assistant_message": "<proposed_plan>\n# T\n## Step 1. A\n## Step 2. B\n</proposed_plan>"})
+        self.cli("next")
+        run({"hook_event_name": "Stop", "session_id": "s2", "last_assistant_message": "Done."})
+        self.assertEqual(self.plan(), ["completed", "completed"])
+
+    def test_done_and_toggle(self):
+        self.approve()
+        self.env.pop("HC_TERMINAL_ID")
+        self.cli("--terminal", "t1", "toggle", "1")  # the current stage done, the next one current
+        self.assertEqual(self.plan(), ["completed", "in_progress", "pending"])
+        self.cli("--terminal", "t1", "toggle", "1")  # back to not done; stage 2 stays current
+        self.assertEqual(self.plan(), ["pending", "in_progress", "pending"])
+        self.cli("--terminal", "t1", "done")
+        self.assertEqual(self.plan(), ["completed", "completed", "completed"])
+        self.cli("--terminal", "t1", "toggle", "3")  # reopened last stage becomes current
+        self.assertEqual(self.plan(), ["completed", "completed", "in_progress"])
+        self.cli("--terminal", "t1", "clear")
+        self.assertFalse(os.path.exists(os.path.join(self.plans, "t1.json")))
+
+
+class Connect(unittest.TestCase):
+    def test_older_hook_set_is_outdated(self):
+        import plan
+        with tempfile.TemporaryDirectory() as d:
+            plan.CLAUDE_CFG = os.path.join(d, "settings.json")
+            plan.CODEX_HOME, plan.CODEX_CFG = d, os.path.join(d, "config.toml")
+            plan.claude_set(True), plan.codex_set(True)
+            st = plan.hook_status()
+            self.assertTrue(st["claude"]["connected"] and st["codex"]["connected"])
+            self.assertFalse(st["claude"]["outdated"] or st["codex"]["outdated"])
+            with open(plan.CLAUDE_CFG) as f:
+                cfg = json.load(f)
+            del cfg["hooks"]["Stop"]  # as connected before Stop was added
+            with open(plan.CLAUDE_CFG, "w") as f:
+                json.dump(cfg, f)
+            self.assertTrue(plan.hook_status()["claude"]["outdated"])
+            plan.claude_set(True)
+            self.assertFalse(plan.hook_status()["claude"]["outdated"])
+
+    def test_codex_tables_inside_our_markers_survive(self):
+        import plan
+        with tempfile.TemporaryDirectory() as d:
+            plan.CODEX_HOME, plan.CODEX_CFG = d, os.path.join(d, "config.toml")
+            with open(plan.CODEX_CFG, "w") as f:
+                f.write('model = "x"\n')
+            plan.codex_set(True)
+            with open(plan.CODEX_CFG) as f:
+                text = f.read()
+            # Codex rewrites its config and appends its own tables before our end marker.
+            foreign = '[hooks.state]\n\n[mcp_servers.repl]\ncommand = "node"\n'
+            text = text.replace(plan.CODEX_END, foreign + plan.CODEX_END)
+            with open(plan.CODEX_CFG, "w") as f:
+                f.write(text)
+            self.assertFalse(plan.hook_status()["codex"]["outdated"])
+            plan.codex_set(False)
+            with open(plan.CODEX_CFG) as f:
+                text = f.read()
+            self.assertNotIn(plan.MARK, text)
+            self.assertNotIn(plan.CODEX_END, text)
+            self.assertIn('model = "x"', text)
+            self.assertIn('[mcp_servers.repl]\ncommand = "node"', text)
+
 
 if __name__ == "__main__":
     unittest.main()

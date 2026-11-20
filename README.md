@@ -15,7 +15,7 @@
 
 </div>
 
-A mod for [Herdr](https://herdr.dev), the desktop app for running coding agents side by side. Approve a plan in **Claude Code** plan mode or **Codex** Plan Mode, and its stages show up in a **Plan** panel next to Files and Changes: what's done, what the agent is on now, what each stage contains. Each space keeps its own panel open or closed.
+A mod for [Herdr](https://herdr.dev), the desktop app for running coding agents side by side. Approve a plan in **Claude Code** plan mode or **Codex** Plan Mode, and its stages show up in a **Plan** panel next to Files and Changes: what's done, what the agent is on now, what each stage contains. The panel shows the plan of the agents in the open tab; each space keeps its own panel open or closed.
 
 No daemon, no plan files in your repos — two small hooks and a panel.
 
@@ -26,7 +26,7 @@ No daemon, no plan files in your repos — two small hooks and a panel.
 | **Claude Code** | the plan you approve in plan mode (also `TodoWrite`, `TaskCreate` / `TaskUpdate`) | Claude marks each stage done with `plan.py next` |
 | **Codex** | the `<proposed_plan>` of Plan Mode (also `update_plan`) | Codex marks stages with its `update_plan` tool |
 
-Once per plan, the hooks show the agent the stages they found and how to mark them; if the split is off, the agent corrects it. Plans are tied to the agent's Herdr terminal, so several agents in one repo never mix up.
+Once per plan, the hooks show the agent the stages they found and how to mark them; if the split is off, the agent corrects it. When the agent ends its turn with only the last stage open, that stage is marked done (agents tend to forget the last one). Click a stage's circle to mark it yourself; the trash icon, or **Clear** under a finished plan, deletes the plan. Plans are tied to the agent's Herdr terminal, so several agents in one repo never mix up.
 
 ## Install
 
@@ -77,7 +77,7 @@ The same command for every hook; it does nothing if the mod is removed:
 P="${HERDR_APP_HOME:-$HOME/.config/herdr-app}/mods/agent-plans/hook/plan.py"; [ -f "$P" ] && python3 "$P" claude || true   # codex for Codex
 ```
 
-- `~/.claude/settings.json`: `PostToolUse` (matcher `ExitPlanMode|TodoWrite|TaskCreate|TaskUpdate`), `TaskCreated`, `TaskCompleted`.
+- `~/.claude/settings.json`: `PostToolUse` (matcher `ExitPlanMode|TodoWrite|TaskCreate|TaskUpdate`), `TaskCreated`, `TaskCompleted`, `Stop`.
 - `~/.codex/config.toml`: `Stop`, `UserPromptSubmit`, `PostToolUse` (matcher `^update_plan$`), between `# >>> agent-plans` and `# <<< agent-plans`.
 
 From a terminal: `python3 ~/.config/herdr-app/mods/agent-plans/hook/plan.py connect claude` (or `disconnect`, `status`).
@@ -98,7 +98,7 @@ Click the connected agents in the panel to remove the hooks, then delete `mods/a
 ## Good to know
 
 - Only this computer's agents are shown.
-- A stage is marked when the agent says so: if it forgets, the panel lags behind.
+- A stage is marked when the agent says so: if it forgets, the panel lags behind (click the stage's circle to fix it).
 - Codex runs its hooks in a shared background server, so the hook finds the Codex terminal by its folder and, with several Codex in one folder, by the thread name in the terminal title. If it still can't tell, the plan isn't shown.
 - `main-plans` is a copy of Herdr's `main` 0.1.13 and doesn't pick up later changes to `main`.
 

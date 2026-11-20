@@ -4,7 +4,7 @@
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, terminals, agents, focused, layout, run, theme, shared, setShared, appHome, readTextFile, watchFolder, props, exec, window } from "herdr";
+import { spaces, terminals, agents, panes, focused, layout, run, theme, shared, setShared, appHome, readTextFile, watchFolder, props, exec, window } from "herdr";
 import * as fs from "fs/promises";
 
 const PANEL = "plans";            // tab id in the panel-body stack
@@ -46,6 +46,18 @@ function programIcon(p, size, color) {
   return p.tint ? svg(p.icon).size(size).flex_none().text_color(color) : image(p.icon).w(size).h(size).flex_none();
 }
 
+// Text buttons in the header icons' style: 26px, radius 6, no fill until hover, a 14px Lucide icon.
+// The icon's color carries the state, not the background.
+function ghost(t, id, { icon, iconColor, label, tooltip, spin, onClick }) {
+  const glyph = svg(spin ? SPINNER : icon).size(14).flex_none().text_color(spin ? t.working : iconColor ?? t.dim);
+  return h_flex().id(id).flex_none().h(26).px(8).gap(6).items_center().rounded(6).cursor_pointer()
+    .text_size(12).text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground))
+    .when(Boolean(tooltip), (el) => el.tooltip(tooltip))
+    .on_click(onClick)
+    .child(spin ? glyph.spin(1100) : glyph)
+    .child(label);
+}
+
 const appName = (app) => (app === "codex" ? "Codex" : app === "claude-code" ? "Claude" : "Agent");
 
 export default class AgentPlans extends View {
@@ -58,7 +70,8 @@ export default class AgentPlans extends View {
       return;
     }
     this.plans = []; this.sig = ""; this.watching = false;
-    this.pick = {};   // picked agent per space
+    this.pick = {};   // picked agent per tab
+    this.confirmClear = null;   // plan key whose trash icon waits for a second click
     this.open = {};   // open stage per plan key (null: all folded)
     this.hooks = null;          // plan.py status reply: { claude: {present, connected}, codex: {...} }
     this.hookError = false;     // python3 failed to run
@@ -119,6 +132,20 @@ export default class AgentPlans extends View {
     });
   }
 
+  // Stage marks, Clear: plan.py edits the plan file under its lock; the folder watch redraws.
+  editPlan(cx, key, args) {
+    cx.spawn(async (cx) => {
+      try { await exec("python3", [hookScript(), "--terminal", key, ...args]); } catch {}
+      this.refresh(cx);
+    });
+  }
+
+  clearPlan(cx, key) {
+    this.confirmClear = null;
+    delete this.open[key];
+    this.editPlan(cx, key, ["clear"]);
+  }
+
   // "Connect: [Claude Code] [Codex]": a click connects or disconnects the agent's hooks.
   connectRow(t) {
     const present = AGENTS.filter(([id]) => this.hooks?.[id]?.present);
@@ -126,44 +153,50 @@ export default class AgentPlans extends View {
     if (this.hookError) return v_flex().px(18).py(10).child(line("Agent Plans needs python3 on PATH to connect agents."));
     const err = this.configError ? line(`Couldn't change ${this.configError}`) : null;
     if (!present.length) return null;
-    const missing = present.some(([id]) => !this.hooks[id].connected);
+    const missing = present.some(([id]) => !this.hooks[id].connected || this.hooks[id].outdated);
     if (!missing && !this.showConnect) return null;
-    return v_flex().flex_none().gap(8).px(18).py(12).border_t(1).border_color(t.border)
-      .child(h_flex().gap(6).items_center().flex_wrap()
-        .child(div().text_size(12).text_color(t.muted).mr(2).child("Connect:"))
+    const outdated = present.some(([id]) => this.hooks[id].outdated);
+    return v_flex().flex_none().gap(6).px(18).py(10).border_t(1).border_color(t.border)
+      .child(h_flex().gap(2).items_center().flex_wrap()
+        .child(div().text_size(12).text_color(t.dim).mr(6).child("Connect"))
         .children(present.map(([id, label]) => {
           const on = this.hooks[id].connected;
-          return h_flex().id(`ap-connect-${id}`).h(26).px(10).gap(5).items_center().rounded(13).cursor_pointer()
-            .text_size(12).bg(on ? t.done + "24" : t.surface).text_color(on ? t.done : t.muted)
-            .hover((s) => s.bg(on ? t.done + "33" : t.hover))
-            .tooltip(on ? `Disconnect ${label}` : `Add Agent Plans hooks to ${label}`)
-            .on_click((_e, cx) => {
+          const old = on && this.hooks[id].outdated;   // connected by an older version: reconnect
+          // connected: check in `done`; outdated: refresh in `working`; not connected: plug in `dim`.
+          return ghost(t, `ap-connect-${id}`, {
+            icon: `mods/agent-plans/${old ? "refresh" : on ? "check" : "plug"}.svg`,
+            iconColor: old ? t.working : on ? t.done : t.dim,
+            label, spin: this.busy === id,
+            tooltip: old ? `Update Agent Plans hooks in ${label}` : on ? `Disconnect ${label}` : `Add Agent Plans hooks to ${label}`,
+            onClick: (_e, cx) => {
               if (this.busy) return;
               this.busy = id;
-              this.checkHooks(cx, [on ? "disconnect" : "connect", id]);
-            })
-            .when(on, (el) => el.child("✓"))
-            .child(this.busy === id ? "…" : label);
+              this.checkHooks(cx, [on && !old ? "disconnect" : "connect", id]);
+            },
+          });
         })))
+      .when(outdated, (el) => el.child(line("New hooks in this version: click ↻ to update.")))
       .when(Boolean(this.hooks.codex?.connected), (el) => el.child(line("Approve once in Codex: /hooks")))
       .when(Boolean(err), (el) => el.child(err));
   }
 
-  // Plans of the shown space's agents: live and recently closed.
-  forSpace(spaceId) {
+  // Plans of the agents in the shown tab: live and recently closed.
+  forTab(spaceId, tabId) {
     const terms = new Map(terminals().map((t) => [t.address, t]));
     const ags = new Map(agents().map((a) => [a.address, a]));
+    const paneTabs = new Map(panes().filter((p) => p.terminal).map((p) => [p.terminal, p.tab]));
     return this.plans
       .map((p) => {
         const term = terms.get(p.terminal);
         const agent = ags.get(p.terminal);
         const space = agent?.space ?? term?.labels?.["herdr.space"] ?? null;
+        const tab = agent?.tab ?? paneTabs.get(p.terminal) ?? term?.labels?.["herdr.tab"] ?? null;
         // Live while its agent runs there. A shell left behind (the agent exited, or the terminal
         // came back after a reboot under the same address) doesn't keep an old plan up.
         const live = Boolean(agent) || (term?.state === "live" && term?.agent === p.app);
-        return { ...p, term, agent, space, live };
+        return { ...p, term, agent, space, tab, live };
       })
-      .filter((p) => p.space === spaceId && (p.live || Date.now() - (p.updated ?? 0) < STALE_MS))
+      .filter((p) => p.space === spaceId && p.tab === tabId && (p.live || Date.now() - (p.updated ?? 0) < STALE_MS))
       .sort((a, b) => (Number(b.live) - Number(a.live)) || ((b.updated ?? 0) - (a.updated ?? 0)));
   }
 
@@ -209,18 +242,28 @@ export default class AgentPlans extends View {
     return make(t.dim, "idle");
   }
 
-  chips(t, list, selected, spaceId) {
-    return h_flex().id("ap-chips").flex_none().gap(6).px(14).pb(10).flex_wrap().children(
+  chips(t, list, selected, tabId) {
+    return h_flex().id("ap-chips").flex_none().gap(2).px(14).pb(10).flex_wrap().children(
       list.map((p) => {
         const on = p.key === selected.key;
-        return h_flex().id(`ap-chip-${p.key}`).h(26).px(9).gap(6).items_center().rounded(13).cursor_pointer()
-          .bg(on ? t.selected : t.surface).text_size(12).text_color(on ? t.foreground : t.muted)
-          .hover((s) => s.bg(t.hover))
-          .on_click((_e, cx) => { this.pick[spaceId] = p.key; cx.notify(); })
+        return h_flex().id(`ap-chip-${p.key}`).h(26).px(8).gap(6).items_center().rounded(6).cursor_pointer()
+          .text_size(12).text_color(on ? t.foreground : t.muted).when(on, (el) => el.bg(t.selected))
+          .hover((s) => s.bg(t.hover).text_color(t.foreground))
+          .on_click((_e, cx) => { this.pick[tabId] = p.key; cx.notify(); })
           .child(programIcon(p.agent?.program ?? p.term?.program, 13, t.foreground))
           .child(div().max_w(120).truncate().child(p.agent?.tab_name || p.term?.where || p.key));
       }),
     );
+  }
+
+  // The stage's mark, clicked: done <-> not done (plan.py toggle).
+  markButton(t, p, s, i, spinning) {
+    const done = s.status === "completed";
+    return div().id(`ap-mark-${p.key}-${i}`).rounded(9).cursor_pointer()
+      .hover((st) => st.bg(t.hover))
+      .tooltip(done ? "Mark not done" : "Mark done")
+      .on_click((_e, cx) => { cx.stop_propagation(); this.editPlan(cx, p.key, ["toggle", String(i + 1)]); })
+      .child(this.mark(t, s.status, spinning));
   }
 
   stage(t, p, s, i, isOpen, spinning) {
@@ -230,7 +273,7 @@ export default class AgentPlans extends View {
     // For the current step Claude gives an "-ing" form (activeForm).
     const text = current && s.active ? s.active : s.text;
     const head = h_flex().gap(10).items_start()
-      .child(div().pt(1).child(this.mark(t, s.status, spinning)))
+      .child(div().pt(1).child(this.markButton(t, p, s, i, spinning)))
       .child(div().flex_1().min_w(0).whitespace_normal().line_height(1.35).text_size(14)
         .text_color(done ? t.dim : current ? t.foreground : t.muted)
         .when(current, (el) => el.font_medium())
@@ -270,7 +313,8 @@ export default class AgentPlans extends View {
             .child(programIcon(p.agent?.program ?? p.term?.program, 16, t.foreground))
             .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(t.muted)
               .child(where ? `${appName(p.app)} · ${where}` : appName(p.app)))
-            .child(this.pill(t, status, p.live)))
+            .child(this.pill(t, status, p.live))
+            .child(this.trash(t, p)))
           .when(Boolean(p.title), (el) => el.child(div().text_size(16).font_semibold().whitespace_normal()
             .line_height(1.3).text_color(t.foreground).child(clip(p.title, 140))))
           .child(h_flex().gap(10).items_center()
@@ -280,15 +324,44 @@ export default class AgentPlans extends View {
                 .w(`${Math.max(2, Math.round((done / steps.length) * 100))}%`)))),
       )
       .child(v_flex().gap(6).children(steps.map((s, i) => this.stage(t, p, s, i, openIdx === i, spinning))))
-      .child(h_flex().gap(8).px(4).text_size(12).text_color(t.dim)
+      .child(all ? this.complete(t, p) : h_flex().gap(8).px(4).text_size(12).text_color(t.dim)
         .child(div().flex_1().min_w(0).truncate().child(msg ? clip(msg, 90) : ""))
         .child(div().flex_none().child(`updated ${ago(p.updated ?? 0)}`)));
+  }
+
+  // Trash icon: the first click asks "Clear?", the second one deletes the plan; 3 s to change your mind.
+  trash(t, p) {
+    const asking = this.confirmClear === p.key;
+    return h_flex().id(`ap-clear-${p.key}`).flex_none().h(22).rounded(6).items_center().justify_center()
+      .cursor_pointer().text_size(12)
+      .when(asking, (el) => el.px(8).bg(t.blocked + "1f").text_color(t.blocked).child("Clear?"))
+      .when(!asking, (el) => el.w(22).text_color(t.dim).hover((st) => st.bg(t.hover).text_color(t.foreground))
+        .child(svg("mods/agent-plans/trash.svg").size(13)))
+      .tooltip(asking ? "Click again to delete this plan" : "Clear plan")
+      .on_click((_e, cx) => {
+        if (asking) return this.clearPlan(cx, p.key);
+        this.confirmClear = p.key;
+        cx.timer.after(3000, (cx) => { if (this.confirmClear === p.key) { this.confirmClear = null; cx.notify(); } });
+        cx.notify();
+      });
+  }
+
+  // Every stage done: a banner with Clear in place of the activity line.
+  complete(t, p) {
+    return h_flex().gap(8).pl(12).pr(5).h(36).items_center().rounded(10).bg(t.done + "1f").text_size(12.5)
+      .child(svg("mods/agent-plans/check.svg").size(14).flex_none().text_color(t.done))
+      .child(div().flex_none().text_color(t.done).font_medium().child("Plan complete"))
+      .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(ago(p.updated ?? 0)))
+      .child(ghost(t, `ap-done-clear-${p.key}`, {
+        icon: "mods/agent-plans/trash.svg", label: "Clear", tooltip: "Delete this plan",
+        onClick: (_e, cx) => this.clearPlan(cx, p.key),
+      }));
   }
 
   empty(t) {
     const line = (text, color = t.dim) => div().text_size(13).text_color(color).whitespace_normal().line_height(1.45).child(text);
     return v_flex().gap(10).px(6).py(4)
-      .child(line("No plan in this space yet.", t.muted))
+      .child(line("No plan in this tab yet.", t.muted))
       .child(line("Approve a plan in Claude Code plan mode or Codex Plan Mode, and its stages show up here."));
   }
 
@@ -296,11 +369,12 @@ export default class AgentPlans extends View {
     const t = theme();
     if (this.button) return this.renderButton(t);
     const space = spaces().find((s) => s.active);
-    const list = space ? this.forSpace(space.id) : [];
+    const tab = space?.tabs.find((x) => x.active);
+    const list = tab ? this.forTab(space.id, tab.id) : [];
     // Default: the focused agent, else the picked one, else the newest.
     const f = focused();
     const focusedKey = list.find((p) => p.terminal && (p.terminal === f?.agent || p.terminal === f?.terminal))?.key;
-    const pickedKey = space && list.some((p) => p.key === this.pick[space.id]) ? this.pick[space.id] : null;
+    const pickedKey = tab && list.some((p) => p.key === this.pick[tab.id]) ? this.pick[tab.id] : null;
     const selected = list.find((p) => p.key === (pickedKey ?? focusedKey)) ?? list[0];
     const row = this.connectRow(t);
 
@@ -322,7 +396,7 @@ export default class AgentPlans extends View {
           .hover((s) => s.bg(t.hover).text_color(t.foreground))
           .on_click(() => run("layout.hide", { id: "panel" }))
           .child("✕")))
-      .when(list.length > 1, (el) => el.child(this.chips(t, list, selected, space.id)))
+      .when(list.length > 1, (el) => el.child(this.chips(t, list, selected, tab.id)))
       .child(v_flex().id("ap-scroll").flex_1().min_h(0).px(12).pb(12).overflow_y_scrollbar()
         .child(selected ? this.plan(t, selected) : this.empty(t)))
       .when(Boolean(row), (el) => el.child(row));
