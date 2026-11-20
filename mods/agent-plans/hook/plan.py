@@ -3,19 +3,22 @@
 
 Hooks (JSON on stdin, always exit 0, never block the agent):
   plan.py claude   Claude Code: PostToolUse(ExitPlanMode|TodoWrite|TaskCreate|TaskUpdate),
-                   TaskCreated, TaskCompleted
+                   TaskCreated, TaskCompleted, Stop
   plan.py codex    Codex: Stop (<proposed_plan> in the last message), UserPromptSubmit,
                    PostToolUse(update_plan)
+  On Stop, a plan whose only open stage is the last one is finished: agents forget the last `next`.
 
-CLI for agents (the terminal comes from $HC_TERMINAL_ID):
+CLI for agents (the terminal comes from $HC_TERMINAL_ID, or --terminal <id> before the command):
   plan.py next                      current stage done, the next one becomes current
+  plan.py done                      every stage done
   plan.py mark <n> done|doing|todo  set stage n (from 1)
+  plan.py toggle <n>                stage n done <-> not done (the Plan panel's stage marks)
   plan.py set --title "T" "doing:step" "todo:step" ...
   plan.py clear
   plan.py show
 
 Connecting the hooks (used by the Plan panel's agent chips):
-  plan.py status                    {"claude": {"present", "connected"}, "codex": {...}}
+  plan.py status                    {"claude": {"present", "connected", "outdated"}, "codex": {...}}
   plan.py connect claude|codex      add the hooks (backup: <config>.bak-agent-plans)
   plan.py disconnect claude|codex   remove exactly these hooks
 
@@ -192,11 +195,25 @@ def reminder(app, steps):
     if app == "codex":
         return head + ("If they don't match the plan's stages, call update_plan with the right ones: they replace these. "
                        "Track progress with update_plan using the stage names, and mark a stage completed as soon as "
-                       f"it is done. If update_plan is unavailable, run: {cmd} next")
+                       f"it is done, the last one too. If update_plan is unavailable, run: {cmd} next")
     return head + ("If they don't match the plan's stages, replace them: "
                    f'{cmd} set --title "<plan title>" "doing:<first stage>" "todo:<next stage>" ...\n'
                    f"Each time you finish a stage, immediately run: {cmd} next  "
-                   "(marks the current stage done and starts the next one).")
+                   "(marks the current stage done and starts the next one). "
+                   "This includes the last stage: run it once more when the whole plan is done.")
+
+
+def finish_last(plan):
+    """On Stop: the agent ended its turn with only the last stage open, so it has finished the plan
+    and forgot the final `next`. Only for plans the agent marks by hand (todos and tasks carry their
+    own statuses; Codex's update_plan replaces the steps). True if the plan changed."""
+    plan = plan or {}
+    steps = plan.get("steps") or []
+    if (plan.get("source") in ("plan-mode", "manual") and steps and steps[-1]["status"] == "in_progress"
+            and all(s["status"] == "completed" for s in steps[:-1])):
+        steps[-1]["status"] = "completed"
+        return True
+    return False
 
 
 # ---------- markdown plan parsing ----------
@@ -298,10 +315,20 @@ IMPLEMENT = "A previous agent produced the plan below"
 
 
 def codex_needs_terminal(data):
-    """Look up the terminal only for events that write something: Stop only with a plan in it."""
+    """Look up the terminal only for events that may write something: Stop with a plan in it,
+    or while some Codex plan waits for its last stage to be finished."""
     if data.get("hook_event_name") == "Stop":
-        return bool(PROPOSED.search(data.get("last_assistant_message") or ""))
+        return bool(PROPOSED.search(data.get("last_assistant_message") or "")) or any(
+            p.get("app") == "codex" and finish_last(p) for p in all_plans())
     return True
+
+
+def all_plans():
+    try:
+        names = [n for n in os.listdir(PLANS) if n.endswith(".json")]
+    except OSError:
+        return []
+    return [p for p in (load(n[:-5]) for n in names) if isinstance(p, dict)]
 
 
 def from_codex(data, key):
@@ -313,6 +340,10 @@ def from_codex(data, key):
         m = PROPOSED.findall(data.get("last_assistant_message") or "")
         if m:
             plan_from_markdown(key, "codex", session, m[-1], "plan-mode")
+        else:
+            plan = load(key)
+            if plan and plan.get("app") == "codex" and finish_last(plan):
+                save(key, plan)
         return
 
     if event == "UserPromptSubmit":
@@ -362,6 +393,11 @@ def from_claude(data, key):
     old = load(key) or {}
     if old.get("session") != session:
         old = {}  # new session in the same terminal: start the plan over
+
+    if event == "Stop":
+        if finish_last(old):
+            save(key, old)
+        return
 
     if tool == "ExitPlanMode":
         # Approved plan: markdown in tool_input.plan, else the file at planFilePath.
@@ -458,7 +494,8 @@ CLAUDE_CFG = os.path.expanduser("~/.claude/settings.json")
 CODEX_HOME = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
 CODEX_CFG = os.path.join(CODEX_HOME, "config.toml")
 CODEX_BEGIN, CODEX_END = "# >>> agent-plans (Herdr Agent Plans)", "# <<< agent-plans"
-CLAUDE_EVENTS = {"PostToolUse": "ExitPlanMode|TodoWrite|TaskCreate|TaskUpdate", "TaskCreated": None, "TaskCompleted": None}
+CLAUDE_EVENTS = {"PostToolUse": "ExitPlanMode|TodoWrite|TaskCreate|TaskUpdate", "TaskCreated": None,
+                 "TaskCompleted": None, "Stop": None}
 CODEX_EVENTS = {"Stop": None, "UserPromptSubmit": None, "PostToolUse": "^update_plan$"}
 
 
@@ -482,10 +519,68 @@ def write_with_backup(path, text):
 
 
 def hook_status():
+    claude, codex = read(CLAUDE_CFG), read(CODEX_CFG)
     return {
-        "claude": {"present": os.path.isdir(os.path.dirname(CLAUDE_CFG)), "connected": MARK in read(CLAUDE_CFG)},
-        "codex": {"present": os.path.isdir(CODEX_HOME), "connected": MARK in read(CODEX_CFG)},
+        "claude": {"present": os.path.isdir(os.path.dirname(CLAUDE_CFG)), "connected": MARK in claude,
+                   "outdated": MARK in claude and claude_outdated(claude)},
+        "codex": {"present": os.path.isdir(CODEX_HOME), "connected": MARK in codex,
+                  "outdated": MARK in codex and codex_split(codex)[0] != codex_block()},
     }
+
+
+def claude_groups():
+    """Our hook groups by event, as connect writes them."""
+    groups = {}
+    for event, matcher in CLAUDE_EVENTS.items():
+        group = {"hooks": [{"type": "command", "command": HOOK_CMD % "claude", "timeout": 5}]}
+        groups[event] = [{"matcher": matcher, **group} if matcher else group]
+    return groups
+
+
+def claude_outdated(text):
+    """Connected by an older version: our groups differ from what connect writes now."""
+    try:
+        hooks = json.loads(text).get("hooks", {})
+    except Exception:
+        return False
+    ours = {e: [g for g in gs if MARK in json.dumps(g)] for e, gs in hooks.items()}
+    return {e: gs for e, gs in ours.items() if gs} != claude_groups()
+
+
+OUR_TABLE = re.compile(r"^\[\[hooks\.\w+(\.hooks)?\]\]$")
+
+
+def codex_split(text):
+    """(our block, the rest of the config). Codex rewrites config.toml itself and may put its own
+    tables (hooks.state, mcp_servers...) before our end marker: our block ends at the first table
+    that isn't one of our hook tables, so those stay in the rest."""
+    ours, rest, inside = [], [], False
+    for line in text.split("\n"):
+        s = line.strip()
+        if s == CODEX_BEGIN:
+            inside = True
+        elif inside and (s == CODEX_END or s.startswith("[") and not OUR_TABLE.match(s)):
+            inside = False
+            if s == CODEX_END:
+                ours.append(line)
+                continue
+        (ours if inside else rest).append(line)
+    if ours and ours[-1].strip() != CODEX_END:
+        while ours and not ours[-1].strip():
+            ours.pop()
+        ours.append(CODEX_END)  # end marker moved by Codex: compare as if in place
+    rest = re.sub(r"\n{3,}", "\n\n", "\n".join(l for l in rest if l.strip() != CODEX_END))
+    return "\n".join(ours), rest
+
+
+def codex_block():
+    cmd = HOOK_CMD % "codex"
+    block = [CODEX_BEGIN]
+    for event, matcher in CODEX_EVENTS.items():
+        block += [f"[[hooks.{event}]]"] + ([f'matcher = "{matcher}"'] if matcher else [])
+        block += [f"[[hooks.{event}.hooks]]", 'type = "command"', f"command = '{cmd}'", "timeout = 5", ""]
+    block[-1] = CODEX_END
+    return "\n".join(block)
 
 
 def claude_set(on):
@@ -500,11 +595,8 @@ def claude_set(on):
         else:
             del hooks[event]
     if on:
-        for event, matcher in CLAUDE_EVENTS.items():
-            group = {"hooks": [{"type": "command", "command": HOOK_CMD % "claude", "timeout": 5}]}
-            if matcher:
-                group = {"matcher": matcher, **group}
-            hooks.setdefault(event, []).append(group)
+        for event, groups in claude_groups().items():
+            hooks.setdefault(event, []).extend(groups)
     if not hooks:
         del cfg["hooks"]
     write_with_backup(CLAUDE_CFG, json.dumps(cfg, ensure_ascii=False, indent=2) + "\n")
@@ -512,16 +604,10 @@ def claude_set(on):
 
 def codex_set(on):
     text = read(CODEX_CFG)
-    # Our block strictly between the markers; the rest of the config stays as is.
-    text = re.sub(r"\n*" + re.escape(CODEX_BEGIN) + r".*?" + re.escape(CODEX_END) + r"\n?", "\n", text, flags=re.S)
+    # Only our hook tables go; the rest of the config stays as is (see codex_split).
+    text = codex_split(text)[1]
     if on:
-        cmd = HOOK_CMD % "codex"
-        block = [CODEX_BEGIN]
-        for event, matcher in CODEX_EVENTS.items():
-            block += [f"[[hooks.{event}]]"] + ([f'matcher = "{matcher}"'] if matcher else [])
-            block += [f"[[hooks.{event}.hooks]]", 'type = "command"', f"command = '{cmd}'", "timeout = 5", ""]
-        block[-1] = CODEX_END
-        text = text.rstrip("\n") + "\n\n" + "\n".join(block) + "\n"
+        text = text.rstrip("\n") + "\n\n" + codex_block() + "\n"
         try:
             import tomllib  # Python 3.11+: never write a config Codex cannot read
             tomllib.loads(text)
@@ -533,8 +619,10 @@ def codex_set(on):
 # ---------- CLI ----------
 
 def cli(argv):
-    cmd = argv[0] if argv else ""
     key = terminal()
+    if argv[:1] == ["--terminal"] and len(argv) > 1:  # the Plan panel names the terminal
+        key, argv = safe_key(argv[1]), argv[2:]
+    cmd = argv[0] if argv else ""
     if cmd in ("", "-h", "--help", "help"):
         print(__doc__)
         return
@@ -591,11 +679,24 @@ def edit_plan(cmd, argv, key):
         nxt = next((i for i, s in enumerate(steps) if s["status"] == "pending"), None)
         if nxt is not None:
             steps[nxt]["status"] = "in_progress"
-    elif cmd == "mark" and len(argv) >= 3 and argv[1].isdigit() and argv[2] in STATUS:
+    elif cmd == "done":
+        for s in steps:
+            s["status"] = "completed"
+    elif cmd in ("mark", "toggle") and len(argv) >= 2 and argv[1].isdigit():
         i = int(argv[1]) - 1
         if not 0 <= i < len(steps):
             sys.exit(f"agent-plans: stage {argv[1]} does not exist (1..{len(steps)})")
-        steps[i]["status"] = STATUS[argv[2]]
+        if cmd == "mark" and len(argv) >= 3 and argv[2] in STATUS:
+            steps[i]["status"] = STATUS[argv[2]]
+        elif cmd == "toggle":
+            steps[i]["status"] = "pending" if steps[i]["status"] == "completed" else "completed"
+            # Keep one stage current: the first one left to do.
+            if not any(s["status"] == "in_progress" for s in steps):
+                nxt = next((s for s in steps if s["status"] == "pending"), None)
+                if nxt:
+                    nxt["status"] = "in_progress"
+        else:
+            sys.exit(__doc__)
     else:
         sys.exit(__doc__)
     # Plan built from Claude tasks: the next TaskUpdate rebuilds steps from tasks, so update them too.
